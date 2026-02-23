@@ -1,3 +1,6 @@
+#[cfg(windows)]
+mod windows;
+
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -461,6 +464,10 @@ async fn run_command_limited(
 ) -> Result<CmdOut, AppError> {
     let start = Instant::now();
 
+    // Windows Job Object that kills the whole process tree when closed/terminated.
+    #[cfg(windows)]
+    let job = win_job::Job::new_kill_on_close().map_err(AppError::Io)?;
+
     let mut child = Command::new(program)
         .args(args)
         .current_dir(dir)
@@ -470,6 +477,20 @@ async fn run_command_limited(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| AppError::Process(format!("spawn failed: {e}")))?;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+
+        let h_process: HANDLE = child.as_raw_handle() as isize;
+
+        // If this fails with ACCESS_DENIED, you're probably already running inside a Job
+        // that disallows nesting/breakaway (common in some CI setups).
+        job.assign(h_process).map_err(|e| {
+            AppError::Process(format!("AssignProcessToJobObject failed: {e}"))
+        })?;
+    }
 
     let mut stdout = child
         .stdout
@@ -485,32 +506,52 @@ async fn run_command_limited(
 
     let status_res = timeout(step_timeout, child.wait()).await;
 
-    let (timed_out, status) = match status_res {
-        Ok(Ok(s)) => (false, Some(s)),
+    let mut timed_out = false;
+    let status = match status_res {
+        Ok(Ok(s)) => Some(s),
         Ok(Err(e)) => return Err(AppError::Process(format!("wait failed: {e}"))),
         Err(_) => {
+            timed_out = true;
             warn!("command timed out: {program} {:?}", args);
+
+            // Kill whole process tree on Windows.
+            #[cfg(windows)]
+            job.terminate();
+
+            // Also try killing the direct child.
             let _ = child.kill().await;
-            let _ = child.wait().await;
-            (true, None)
+
+            // Reap best-effort (don’t hang here forever).
+            let _ = timeout(Duration::from_secs(2), child.wait()).await;
+
+            None
         }
     };
+
+    // IMPORTANT: don’t detach IO tasks.
+    // If the process tree was killed, pipes should close. If not, don’t hang forever.
+    let (stdout_bytes, stdout_trunc) =
+        match timeout(Duration::from_secs(2), stdout_task).await {
+            Ok(joined) => joined
+                .map_err(|e| AppError::Process(format!("stdout join: {e}")))??,
+            Err(_) => (Vec::new(), true),
+        };
+
+    let (stderr_bytes, stderr_trunc) =
+        match timeout(Duration::from_secs(2), stderr_task).await {
+            Ok(joined) => joined
+                .map_err(|e| AppError::Process(format!("stderr join: {e}")))??,
+            Err(_) => (Vec::new(), true),
+        };
+
+    let duration_ms = start.elapsed().as_millis();
 
     if timed_out {
         return Err(AppError::Timeout);
     }
 
-    let (stdout_bytes, stdout_trunc) = stdout_task
-        .await
-        .map_err(|e| AppError::Process(format!("stdout join: {e}")))??;
-    let (stderr_bytes, stderr_trunc) = stderr_task
-        .await
-        .map_err(|e| AppError::Process(format!("stderr join: {e}")))??;
-
-    let duration_ms = start.elapsed().as_millis();
-
     let exit_code = status.and_then(|s| s.code());
-    let ok = !timed_out && status.map(|s| s.success()).unwrap_or(false);
+    let ok = status.map(|s| s.success()).unwrap_or(false);
 
     Ok(CmdOut {
         ok,
