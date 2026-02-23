@@ -351,15 +351,21 @@ async fn run_attempt(
     };
 
     // 2) strip common formatting issues
-    let stripped_a = raw_text.strip_prefix("```rust\n").unwrap_or(raw_text.as_str());
-    let stripped_b = stripped_a.strip_suffix("\n```").unwrap_or(stripped_a);
+    let stripped_a = raw_text.trim_ascii();
+    let stripped_b = stripped_a.strip_prefix("```rust\n").unwrap_or(stripped_a);
+    let stripped_c = stripped_b.strip_suffix("\n```").unwrap_or(stripped_b);
 
     if cli.save_artifacts {
-        out.raw_model_text = Some(stripped_b.to_string());
+        out.raw_model_text = Some(stripped_c.to_string());
+    }
+
+    if stripped_c.is_empty() {
+        out.eval_error = Some("empty model output".to_string());
+        return Ok(out);
     }
 
     // 3) Join the model output with the prepared unit tests
-    let eval_text = format!("{}\n\n{}", stripped_b, tests);
+    let eval_text = format!("{}\n\n{}", stripped_c, tests);
 
     // 4) Evaluate
     match eval_code(client, cli, &eval_text).await {
