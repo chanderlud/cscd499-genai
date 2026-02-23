@@ -1,12 +1,3 @@
-use std::path::Path;
-
-pub struct MappedView { pub ptr: *const u8, pub len: usize }
-pub fn map_ro(path: &Path) -> Result<(OwnedHandle /*file*/, OwnedHandle /*mapping*/, MappedView)>;
-
-fn main() {
-
-}
-
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

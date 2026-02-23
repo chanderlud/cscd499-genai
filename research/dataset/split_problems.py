@@ -5,5 +5,5 @@ problems = problems_str.split("\n\n### ")
 
 for problem in problems:
     problem_str = problem.replace("### ", "")
-    with open(f"problems/{uuid4()}.md", "w+") as f:
+    with open(f"dataset/demo/problems/{uuid4()}.md", "w+") as f:
         f.write(problem_str)
