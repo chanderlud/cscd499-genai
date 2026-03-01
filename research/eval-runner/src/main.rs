@@ -11,8 +11,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use std::fs::{File};
+use std::time::Duration;
+use tokio::time::sleep;
 
 const WINDOWS_DEPENDENCIES: &str = r#"windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_UI", "Win32_UI_Shell", "Win32_System_Ole", "Win32_System_WindowsProgramming", "Win32_System_SystemInformation", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_Security"] }"#;
+const CARGO_DEPENDENCIES: &str = r#"regex = "*"
+rand = "*"
+md5 = "*"
+"#;
+const MAX_RETRIES: usize = 10;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "rust-eval-runner")]
@@ -332,6 +339,7 @@ async fn run_attempt(
     prompt: &str,
     tests: &str,
 ) -> Result<AttemptReport> {
+    let mut retries = 0;
     let mut out = AttemptReport {
         attempt,
         prompt: cli.save_artifacts.then(|| prompt.to_string()),
@@ -341,31 +349,47 @@ async fn run_attempt(
         eval_error: None,
     };
 
-    // 1) Generate with OpenRouter
-    let raw_text = match openrouter_chat(client, cli, prompt).await {
-        Ok(t) => t,
-        Err(e) => {
-            out.generation_error = Some(e.to_string());
-            return Ok(out);
+    let output = loop {
+        // 1) Generate with OpenRouter
+        let raw_text = match openrouter_chat(client, cli, prompt).await {
+            Ok(t) => t,
+            Err(e) => {
+                if retries > MAX_RETRIES {
+                    out.generation_error = Some(e.to_string());
+                    return Ok(out);
+                } else {
+                    retries += 1;
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            }
+        };
+
+        // 2) strip common formatting issues
+        let stripped_a = raw_text.trim_ascii();
+        let stripped_b = stripped_a.strip_prefix("```rust\n").unwrap_or(stripped_a);
+        let stripped_c = stripped_b.strip_suffix("\n```").unwrap_or(stripped_b);
+
+        if cli.save_artifacts {
+            out.raw_model_text = Some(stripped_c.to_string());
+        }
+
+        if stripped_c.is_empty() {
+            if retries > MAX_RETRIES {
+                out.eval_error = Some("empty model output".to_string());
+                return Ok(out);
+            } else {
+                retries += 1;
+                sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        } else {
+            break stripped_c.to_string();
         }
     };
 
-    // 2) strip common formatting issues
-    let stripped_a = raw_text.trim_ascii();
-    let stripped_b = stripped_a.strip_prefix("```rust\n").unwrap_or(stripped_a);
-    let stripped_c = stripped_b.strip_suffix("\n```").unwrap_or(stripped_b);
-
-    if cli.save_artifacts {
-        out.raw_model_text = Some(stripped_c.to_string());
-    }
-
-    if stripped_c.is_empty() {
-        out.eval_error = Some("empty model output".to_string());
-        return Ok(out);
-    }
-
     // 3) Join the model output with the prepared unit tests
-    let eval_text = format!("{}\n\n{}", stripped_c, tests);
+    let eval_text = format!("{}\n\n{}", output, tests);
 
     // 4) Evaluate
     match eval_code(client, cli, &eval_text).await {
@@ -458,7 +482,7 @@ async fn eval_code(client: &reqwest::Client, cli: &Cli, gen: &str) -> Result<Eva
 
     let body = EvaluateRequest {
         main_rs: gen.to_string(),
-        dependencies: String::new(),
+        dependencies: CARGO_DEPENDENCIES.to_string(),
     };
 
     let resp = req

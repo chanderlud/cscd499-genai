@@ -12,6 +12,7 @@ NON-NEGOTIABLE OUTPUT RULES
 
 CRATE / API RULES
 - Depend only on std
+- Include any required `using` statements at the start of the output
 
 IMPLEMENTATION RULES
 - Follow the Spec and Constraints precisely. If they conflict, Constraints win.

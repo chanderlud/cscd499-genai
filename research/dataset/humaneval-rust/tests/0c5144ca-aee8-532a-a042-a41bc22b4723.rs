@@ -1,0 +1,13 @@
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+  #[test]
+    fn test_mean_absolute_deviation() {
+        assert!(mean_absolute_deviation(vec![1.0, 2.0, 3.0]) - 2.0 / 3.0 < 0.000001);
+        assert!(mean_absolute_deviation(vec![1.0, 2.0, 3.0, 4.0]) - 1.0 < 0.000001);
+        assert!(mean_absolute_deviation(vec![1.0, 2.0, 3.0, 4.0, 5.0]) - 6.0 / 5.0 < 0.000001);
+    }
+
+}
