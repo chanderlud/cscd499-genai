@@ -11,8 +11,8 @@ NON-NEGOTIABLE OUTPUT RULES
 6) Determinism: no randomness, no time-based behavior, no non-deterministic ordering.
 
 CRATE / API RULES
-- Depend only on std and windows crate v0.62.2.
-- Include any required `using` statements at the start of the output
+- Depend only on std and windows crate v0.62.2, regex, rand, and md5.
+- Include any required `using` statements at the start of the output.
 - Always include this import at top of the output (even if unused):
   #[allow(unused_imports)]
   use windows::core::{Result, Error};
