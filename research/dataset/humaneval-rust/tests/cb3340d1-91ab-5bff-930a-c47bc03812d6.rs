@@ -1,36 +1,97 @@
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
 
-#[test]
-    //Imposing that random characters that can be generated are solely from the alphabet
-    fn test_decode_encode() {
-        fn random_char() -> char {
-            let mut rng = rand::thread_rng();
-            let letter: char = match rng.gen_range(0, 2) {
-                0 => rng.gen_range(b'a', b'z' + 1).into(),
-                1 => rng.gen_range(b'A', b'Z' + 1).into(),
-                _ => unreachable!(),
+    fn random_alpha_string(len: usize) -> String {
+        let mut rng = rand::thread_rng();
+        let mut out = String::with_capacity(len);
+
+        for _ in 0..len {
+            let upper = rng.gen_bool(0.5);
+            let c = if upper {
+                rng.gen_range(b'A'..=b'Z') as char
+            } else {
+                rng.gen_range(b'a'..=b'z') as char
             };
-            return letter;
+            out.push(c);
+        }
+        out
+    }
+
+    #[test]
+    fn test_decode_empty_string() {
+        let s = "";
+        let enc = encode_shift(s);
+        let dec = decode_shift(&enc);
+        assert_eq!(dec, s);
+    }
+
+    #[test]
+    fn test_decode_single_char_all_letters() {
+        // Lowercase
+        for b in b'a'..=b'z' {
+            let s = (b as char).to_string();
+            let enc = encode_shift(&s);
+            let dec = decode_shift(&enc);
+            assert_eq!(dec, s, "failed on lowercase char {}", s);
         }
 
-        let mut rng = rand::thread_rng();
-        for _ in 0..100 {
-            let r1: i32 = rng.gen();
-            let l: i32 = 10 + r1 % 11;
-            let mut str: String = "".to_string();
-
-            for _ in 0..l {
-                let chr: char = random_char();
-                println!("{}", chr);
-                str.push(chr);
-            }
-
-            let encoded_str: String = encode_shift(&str);
-            assert!(decode_shift(&encoded_str) == str);
+        // Uppercase
+        for b in b'A'..=b'Z' {
+            let s = (b as char).to_string();
+            let enc = encode_shift(&s);
+            let dec = decode_shift(&enc);
+            assert_eq!(dec, s, "failed on uppercase char {}", s);
         }
     }
 
+    #[test]
+    fn test_decode_known_strings_roundtrip() {
+        // Deterministic cases, including wrap-around candidates and mixed case.
+        let cases = [
+            "abc",
+            "xyz",
+            "ABC",
+            "XYZ",
+            "aAzZ",
+            "zZaA",
+            "HelloWorld",
+            "RustLANG",
+            "aaaaaaaaaa",
+            "ZZZZzzzz",
+        ];
+
+        for s in cases {
+            let enc = encode_shift(s);
+            let dec = decode_shift(&enc);
+            assert_eq!(dec, s, "roundtrip failed for input {:?}", s);
+        }
+    }
+
+    #[test]
+    fn test_decode_encode_random_alpha_only() {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..500 {
+            let len = rng.gen_range(0..=64);
+            let s = random_alpha_string(len);
+
+            let encoded = encode_shift(&s);
+            let decoded = decode_shift(&encoded);
+
+            assert_eq!(decoded, s);
+            // Extra sanity: decoding shouldn't change length for ASCII alpha inputs.
+            assert_eq!(decoded.len(), s.len());
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_long_input() {
+        // Long-ish input to catch any weird indexing / overflow / performance bugs.
+        let s = "aBcDeFgHiJkLmNoPqRsTuVwXyZ".repeat(1000);
+        let enc = encode_shift(&s);
+        let dec = decode_shift(&enc);
+        assert_eq!(dec, s);
+    }
 }

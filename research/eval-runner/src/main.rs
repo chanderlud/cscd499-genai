@@ -37,7 +37,7 @@ struct Cli {
     k: usize,
 
     /// OpenRouter model id (e.g. "openai/gpt-4.1-mini", "anthropic/claude-3.5-sonnet")
-    #[arg(long, default_value = "openai/gpt-4o-mini")]
+    #[arg(long, default_value = "qwen2.5-coder:latest")]
     model: String,
 
     /// OpenRouter API key (or set OPENROUTER_API_KEY)
@@ -53,7 +53,7 @@ struct Cli {
     openrouter_x_title: Option<String>,
 
     /// OpenRouter base URL
-    #[arg(long, default_value = "https://openrouter.ai/api/v1")]
+    #[arg(long, default_value = "http://localhost:11434/v1")]
     openrouter_base: String,
 
     /// Evaluation API base URL (your service)
@@ -72,8 +72,8 @@ struct Cli {
     #[arg(long, default_value_t = 1400)]
     max_tokens: u32,
 
-    /// Concurrency of attempts (LLM + eval) within a problem
-    #[arg(long, default_value_t = 2)]
+    /// Concurrency of problems
+    #[arg(long, default_value_t = 5)]
     concurrency: usize,
 
     /// Output directory (writes run_report.json + summary.csv)
@@ -81,7 +81,7 @@ struct Cli {
     out_dir: PathBuf,
 
     /// Save full attempt artifacts (prompts, raw model text, full eval stdout/stderr) in run_report.json
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     save_artifacts: bool,
 }
 
@@ -248,29 +248,38 @@ async fn main() -> Result<()> {
     let started_unix_ms = now_unix_ms();
 
     let problem_count = problems.len();
-    let mut problem_reports = Vec::with_capacity(problem_count);
 
-    for (index, (problem_id, problem)) in problems.into_iter().enumerate() {
-        let attempts = run_problem(
-            &client,
-            &cli,
-            &template,
-            &problem_id,
-            &problem,
-        )
-            .await?;
+    let problem_reports: Vec<_> = stream::iter(problems.into_iter().enumerate())
+        .map(|(index, (problem_id, problem))| {
+            let client = client.clone();
+            let cli = cli.clone();
+            let template = template.clone();
 
-        println!("[{}/{problem_count}] evaluated problem {problem_id}", index + 1);
+            async move {
+                let attempts = run_problem(
+                    &client,
+                    &cli,
+                    &template,
+                    &problem_id,
+                    &problem,
+                )
+                    .await?;
 
-        let stats = compute_stats(&attempts);
+                println!("[{}/{problem_count}] evaluated problem {problem_id}", index + 1);
 
-        problem_reports.push(ProblemReport {
-            problem_id,
-            problem: problem.prompt,
-            attempts,
-            stats,
-        });
-    }
+                let stats = compute_stats(&attempts);
+
+                Ok::<ProblemReport, anyhow::Error>(ProblemReport {
+                    problem_id,
+                    problem: problem.prompt,
+                    attempts,
+                    stats,
+                })
+            }
+        })
+        .buffer_unordered(cli.concurrency)
+        .collect()
+        .await;
 
     let report = RunReport {
         meta: RunMeta {
@@ -280,7 +289,7 @@ async fn main() -> Result<()> {
             eval_base: cli.eval_base.clone(),
             openrouter_base: cli.openrouter_base.clone(),
         },
-        problems: problem_reports,
+        problems: problem_reports.into_iter().filter_map(|r| r.ok()).collect(),
     };
 
     // Write JSON report
@@ -307,25 +316,14 @@ async fn run_problem(
     problem: &ProblemContents,
 ) -> Result<Vec<AttemptReport>> {
     let prompt = template.replace("{{problem}}", &problem.prompt);
+    let mut attempts = Vec::with_capacity(cli.k);
 
-    let attempt_indices: Vec<usize> = (1..=cli.k).collect();
-
-    let mut attempts: Vec<AttemptReport> = stream::iter(attempt_indices)
-        .map(|attempt| {
-            let client = client.clone();
-            let cli = cli.clone();
-            let prompt = prompt.clone();
-            let problem_id = problem_id.to_string();
-            let tests = problem.tests.clone();
-            async move {
-                run_attempt(&client, &cli, &problem_id, attempt, &prompt, &tests).await
-            }
-        })
-        .buffer_unordered(cli.concurrency)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>>>()?;
+    for attempt in 1..=cli.k {
+        match run_attempt(&client, &cli, &problem_id, attempt, &prompt, &problem.tests).await {
+            Ok(result) => attempts.push(result),
+            Err(error) => eprintln!("attempt {attempt} failed for {problem_id}: {error}")
+        }
+    }
 
     attempts.sort_by_key(|a| a.attempt);
     Ok(attempts)
@@ -354,6 +352,7 @@ async fn run_attempt(
         let raw_text = match openrouter_chat(client, cli, prompt).await {
             Ok(t) => t,
             Err(e) => {
+                println!("{}", e);
                 if retries > MAX_RETRIES {
                     out.generation_error = Some(e.to_string());
                     return Ok(out);

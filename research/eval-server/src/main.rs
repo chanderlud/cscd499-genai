@@ -466,7 +466,7 @@ async fn run_command_limited(
 
     // Windows Job Object that kills the whole process tree when closed/terminated.
     #[cfg(windows)]
-    let job = win_job::Job::new_kill_on_close().map_err(AppError::Io)?;
+    let job = windows::Job::new_kill_on_close().map_err(AppError::Io)?;
 
     let mut child = Command::new(program)
         .args(args)
@@ -480,10 +480,9 @@ async fn run_command_limited(
 
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Foundation::HANDLE;
 
-        let h_process: HANDLE = child.as_raw_handle() as isize;
+        let h_process: HANDLE = child.raw_handle().unwrap() as isize;
 
         // If this fails with ACCESS_DENIED, you're probably already running inside a Job
         // that disallows nesting/breakaway (common in some CI setups).
