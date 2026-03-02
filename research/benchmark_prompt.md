@@ -16,6 +16,7 @@ CRATE / API RULES
 - Always include this import at top of the output (even if unused):
   #[allow(unused_imports)]
   use windows::core::{Result, Error};
+- Utilize the windows API to implement the problem, do not cheat and use the std crate
 
 ERROR HANDLING RULES
 - Do NOT change the given function signature.

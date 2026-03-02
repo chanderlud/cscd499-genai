@@ -43,14 +43,17 @@ PROMPT_TEMPLATE = """You are an expert Rust developer and test engineer.
 
 TASK:
 Write a Rust test file for the programming problem described below.
+Simply verify the behavior of the function while attempting to catch edge cases.
 
 OUTPUT RULES (IMPORTANT):
 - Output ONLY one Rust fenced code block (```rust ... ```). No prose, no extra blocks.
-- The code must compile on stable Rust with Cargo.
 - Prefer deterministic tests with clear expected values.
-- Simply verify the behavior while attempting to catch edge cases.
-    
-Always write tests within a block like this:
+- Do not implement the programming problem, assume that the function described by the problem will be imported from super.
+- Do not assume that functions other than the function described in the problem will be available
+- You may use the windows crate, but other external dependencies should be avoided
+- Do not implement mock windows API related functions or types, use the windows crate
+
+Always write tests within a block like this, do not write code outside this block:
 #[cfg(test)]
 mod tests {{
     use super::*;
