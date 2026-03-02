@@ -1,9 +1,8 @@
 from uuid import uuid4
 
-problems_str = open("staging.md", "r").read()
-problems = problems_str.split("\n\n### ")
+problems_str = open("staging.md", "r", errors="ignore").read()
+problems = problems_str.split("\n---\n\n")
 
 for problem in problems:
-    problem_str = problem.replace("### ", "")
-    with open(f"dataset/demo/problems/{uuid4()}.md", "w+") as f:
-        f.write(problem_str)
+    with open(f"ipc/problems/{uuid4()}.md", "w+") as f:
+        f.write(problem)
