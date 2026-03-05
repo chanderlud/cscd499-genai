@@ -10,7 +10,7 @@ use doc_parser::SearchIndex;
 use server::AppState;
 
 /// Default server port.
-const DEFAULT_PORT: u16 = 3000;
+const DEFAULT_PORT: u16 = 3001;
 
 #[tokio::main]
 async fn main() -> Result<()> {

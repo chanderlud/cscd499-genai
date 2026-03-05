@@ -173,7 +173,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let concurrency: usize = std::env::var("CONCURRENCY")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+        .unwrap_or(4);
 
     let api_key = std::env::var("API_KEY").ok();
 
@@ -197,7 +197,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .layer(RequestBodyLimitLayer::new(512 * 1024))
         .with_state(Arc::new(state));
 
-    let addr = "0.0.0.0:3000";
+    let addr = "0.0.0.0:3002";
     info!("listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -486,9 +486,8 @@ async fn run_command_limited(
 
         // If this fails with ACCESS_DENIED, you're probably already running inside a Job
         // that disallows nesting/breakaway (common in some CI setups).
-        job.assign(h_process).map_err(|e| {
-            AppError::Process(format!("AssignProcessToJobObject failed: {e}"))
-        })?;
+        job.assign(h_process)
+            .map_err(|e| AppError::Process(format!("AssignProcessToJobObject failed: {e}")))?;
     }
 
     let mut stdout = child
@@ -529,19 +528,15 @@ async fn run_command_limited(
 
     // IMPORTANT: don’t detach IO tasks.
     // If the process tree was killed, pipes should close. If not, don’t hang forever.
-    let (stdout_bytes, stdout_trunc) =
-        match timeout(Duration::from_secs(2), stdout_task).await {
-            Ok(joined) => joined
-                .map_err(|e| AppError::Process(format!("stdout join: {e}")))??,
-            Err(_) => (Vec::new(), true),
-        };
+    let (stdout_bytes, stdout_trunc) = match timeout(Duration::from_secs(2), stdout_task).await {
+        Ok(joined) => joined.map_err(|e| AppError::Process(format!("stdout join: {e}")))??,
+        Err(_) => (Vec::new(), true),
+    };
 
-    let (stderr_bytes, stderr_trunc) =
-        match timeout(Duration::from_secs(2), stderr_task).await {
-            Ok(joined) => joined
-                .map_err(|e| AppError::Process(format!("stderr join: {e}")))??,
-            Err(_) => (Vec::new(), true),
-        };
+    let (stderr_bytes, stderr_trunc) = match timeout(Duration::from_secs(2), stderr_task).await {
+        Ok(joined) => joined.map_err(|e| AppError::Process(format!("stderr join: {e}")))??,
+        Err(_) => (Vec::new(), true),
+    };
 
     let duration_ms = start.elapsed().as_millis();
 
