@@ -5,9 +5,11 @@ mod doc_builder;
 mod doc_parser;
 mod search;
 mod server;
+mod src_signature_extractor;
 
 use doc_parser::SearchIndex;
 use server::AppState;
+use src_signature_extractor::SourceSignatureExtractor;
 
 /// Default server port.
 const DEFAULT_PORT: u16 = 3001;
@@ -18,17 +20,12 @@ async fn main() -> Result<()> {
 
     let project_root = std::env::current_dir().context("Failed to get current directory")?;
 
-    // Step 1: Acquire documentation (download from Microsoft docs or generate locally)
-    let docs_result = if args.rebuild_docs {
-        println!("Rebuilding documentation as requested...");
-        doc_builder::clean_docs(&project_root)?;
-        doc_builder::acquire_docs(&project_root)
-            .context("Failed to acquire documentation")?
-    } else if doc_builder::docs_exist(&project_root) {
+    // Step 1: Acquire documentation from Microsoft docs
+    let docs_result = if doc_builder::docs_exist(&project_root) {
         doc_builder::existing_docs(&project_root)
             .context("Failed to load existing documentation")?
     } else {
-        println!("No documentation found. Acquiring...");
+        println!("No downloaded documentation found. Acquiring...");
         doc_builder::acquire_docs(&project_root)
             .context("Failed to acquire documentation")?
     };
@@ -50,8 +47,26 @@ async fn main() -> Result<()> {
         println!("Indexed {} documentation items.", index.len());
     }
 
+    let src_root = project_root.join("data").join("windows").join("src");
+    let sig_extractor = match SourceSignatureExtractor::new(src_root.clone()) {
+        Ok(extractor) => {
+            println!("Local source signatures enabled from {}.", src_root.display());
+            Some(extractor)
+        }
+        Err(_) => {
+            println!(
+                "Local source signatures unavailable at {}. Results will omit signatures.",
+                src_root.display()
+            );
+            None
+        }
+    };
+
     // Step 3: Start the HTTP server
-    let state = Arc::new(AppState { index });
+    let state = Arc::new(AppState {
+        index,
+        sig_extractor,
+    });
     let router = server::build_router(state);
 
     let port = args.port;
@@ -96,22 +111,17 @@ async fn shutdown_signal() {
 
 /// Parsed command-line arguments.
 struct Args {
-    rebuild_docs: bool,
     port: u16,
 }
 
 /// Parse command-line arguments manually (no extra dependency needed).
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
-    let mut rebuild_docs = false;
     let mut port = DEFAULT_PORT;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--rebuild-docs" => {
-                rebuild_docs = true;
-            }
             "--port" => {
                 i += 1;
                 if i < args.len() {
@@ -132,8 +142,5 @@ fn parse_args() -> Args {
         i += 1;
     }
 
-    Args {
-        rebuild_docs,
-        port,
-    }
+    Args { port }
 }

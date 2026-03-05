@@ -12,10 +12,12 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::doc_parser::{ItemKind, SearchIndex};
 use crate::search::{self, SearchResult};
+use crate::src_signature_extractor::SourceSignatureExtractor;
 
 /// Shared application state.
 pub struct AppState {
     pub index: SearchIndex,
+    pub sig_extractor: Option<SourceSignatureExtractor>,
 }
 
 /// Query parameters for the search endpoint.
@@ -106,12 +108,21 @@ async fn search_handler(
             .into_response();
     }
 
-    let results = search::search(
+    let mut results = search::search(
         &state.index,
         &query,
         kind_filter.as_ref(),
         params.limit,
     );
+
+    if let Some(extractor) = &state.sig_extractor {
+        for result in &mut results {
+            if result.signature.is_none() {
+                result.signature =
+                    extractor.extract_signature(&result.name, &result.kind, &result.path);
+            }
+        }
+    }
 
     let response = SearchResponse {
         query,

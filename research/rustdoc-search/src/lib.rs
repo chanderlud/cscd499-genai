@@ -34,3 +34,4 @@ pub mod doc_builder;
 pub mod doc_parser;
 pub mod search;
 pub mod server;
+pub mod src_signature_extractor;

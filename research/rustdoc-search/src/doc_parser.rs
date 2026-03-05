@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
-use rustdoc_types::{Crate, Id, Item, ItemEnum};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::doc_builder::DocSource;
@@ -45,26 +43,6 @@ impl ItemKind {
         }
     }
 
-    /// Convert a `rustdoc_types::ItemKind` to our `ItemKind`.
-    fn from_rustdoc(kind: &rustdoc_types::ItemKind) -> Self {
-        match kind {
-            rustdoc_types::ItemKind::Module => Self::Module,
-            rustdoc_types::ItemKind::Struct => Self::Struct,
-            rustdoc_types::ItemKind::Enum => Self::Enum,
-            rustdoc_types::ItemKind::Function => Self::Function,
-            rustdoc_types::ItemKind::Trait => Self::Trait,
-            rustdoc_types::ItemKind::Constant => Self::Constant,
-            rustdoc_types::ItemKind::TypeAlias => Self::TypeAlias,
-            rustdoc_types::ItemKind::Macro
-            | rustdoc_types::ItemKind::ProcAttribute
-            | rustdoc_types::ItemKind::ProcDerive => Self::Macro,
-            rustdoc_types::ItemKind::Variant => Self::Variant,
-            rustdoc_types::ItemKind::StructField => Self::StructField,
-            rustdoc_types::ItemKind::Union => Self::Union,
-            rustdoc_types::ItemKind::Impl => Self::Impl,
-            _ => Self::Other,
-        }
-    }
 }
 
 impl std::fmt::Display for ItemKind {
@@ -113,17 +91,12 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
-    /// Build from documentation results, auto-detecting the source format.
-    pub fn from_docs(source: &DocSource, paths: &[PathBuf]) -> Result<Self> {
-        match source {
-            DocSource::Downloaded => {
-                if let Some(path) = paths.first() {
-                    Self::from_all_items_html(path)
-                } else {
-                    anyhow::bail!("No HTML file path provided");
-                }
-            }
-            DocSource::LocalJson => Self::from_json_files(paths),
+    /// Build from downloaded documentation results.
+    pub fn from_docs(_source: &DocSource, paths: &[PathBuf]) -> Result<Self> {
+        if let Some(path) = paths.first() {
+            Self::from_all_items_html(path)
+        } else {
+            anyhow::bail!("No HTML file path provided");
         }
     }
 
@@ -140,43 +113,6 @@ impl SearchIndex {
         println!("Parsed {} items from all-items HTML.", items.len());
 
         Ok(Self { items })
-    }
-
-    /// Build a search index from multiple rustdoc JSON files.
-    pub fn from_json_files(paths: &[PathBuf]) -> Result<Self> {
-        let mut all_items = Vec::new();
-        let mut seen_paths: HashSet<String> = HashSet::new();
-
-        for path in paths {
-            let file_name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let content = std::fs::read_to_string(path).with_context(|| {
-                format!("Failed to read documentation JSON from {}", path.display())
-            })?;
-
-            let krate: Crate = serde_json::from_str(&content).with_context(|| {
-                format!("Failed to parse rustdoc JSON from {}", path.display())
-            })?;
-
-            let items = extract_items_from_crate(&krate);
-            let count_before = all_items.len();
-
-            for item in items {
-                if seen_paths.insert(item.path.clone()) {
-                    all_items.push(item);
-                }
-            }
-
-            let added = all_items.len() - count_before;
-            println!("  {} — {} new items", file_name, added);
-        }
-
-        println!("Total: {} unique documentation items.", all_items.len());
-
-        Ok(Self { items: all_items })
     }
 
     /// Get the total number of items in the index.
@@ -273,7 +209,7 @@ fn parse_all_items_html(html: &str) -> Result<Vec<DocItem>> {
                         kind,
                         path: full_path,
                         docs: None,      // HTML listing doesn't include docs
-                        signature: None,  // HTML listing doesn't include signatures
+                        signature: None, // HTML listing doesn't include signatures
                     });
                 }
             }
@@ -331,140 +267,3 @@ fn kind_from_href(href: &str) -> Option<ItemKind> {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Rustdoc JSON parser (for locally generated docs)
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Extract all relevant items from a parsed rustdoc `Crate`.
-fn extract_items_from_crate(krate: &Crate) -> Vec<DocItem> {
-    let mut items = Vec::new();
-    let mut seen_ids: HashSet<u32> = HashSet::new();
-    let path_map = &krate.paths;
-
-    let mut id_path_cache: HashMap<&Id, String> = HashMap::new();
-    for (id, item_summary) in path_map {
-        let full_path = item_summary.path.join("::");
-        id_path_cache.insert(id, full_path);
-    }
-
-    // Extract from index (full detail)
-    for (id, item) in &krate.index {
-        if let Some(doc_item) = convert_item(id, item, &id_path_cache) {
-            seen_ids.insert(id.0);
-            items.push(doc_item);
-        }
-    }
-
-    // Extract from paths (limited detail, but broader coverage)
-    for (id, summary) in path_map {
-        if seen_ids.contains(&id.0) {
-            continue;
-        }
-
-        let kind = ItemKind::from_rustdoc(&summary.kind);
-        if matches!(kind, ItemKind::Other | ItemKind::Impl | ItemKind::StructField) {
-            continue;
-        }
-
-        let full_path = summary.path.join("::");
-        let name = match summary.path.last() {
-            Some(n) => n.clone(),
-            None => continue,
-        };
-
-        items.push(DocItem {
-            id: format!("{}", id.0),
-            name,
-            kind,
-            path: full_path,
-            docs: None,
-            signature: None,
-        });
-    }
-
-    items
-}
-
-/// Convert a single rustdoc `Item` into our `DocItem` representation.
-fn convert_item(
-    id: &Id,
-    item: &Item,
-    path_cache: &HashMap<&Id, String>,
-) -> Option<DocItem> {
-    let name = item.name.as_ref()?.clone();
-    let (kind, signature) = classify_item(&item.inner);
-
-    if matches!(kind, ItemKind::Other | ItemKind::Impl) {
-        return None;
-    }
-
-    let path = path_cache
-        .get(id)
-        .cloned()
-        .unwrap_or_else(|| name.clone());
-
-    let docs = item.docs.clone();
-
-    Some(DocItem {
-        id: format!("{}", id.0),
-        name,
-        kind,
-        path,
-        docs,
-        signature,
-    })
-}
-
-/// Classify a rustdoc `ItemEnum` into our `ItemKind` and extract a signature.
-fn classify_item(inner: &ItemEnum) -> (ItemKind, Option<String>) {
-    match inner {
-        ItemEnum::Module(_) => (ItemKind::Module, None),
-        ItemEnum::Struct(s) => {
-            let field_count = match &s.kind {
-                rustdoc_types::StructKind::Unit => 0,
-                rustdoc_types::StructKind::Tuple(fields) => fields.len(),
-                rustdoc_types::StructKind::Plain { fields, .. } => fields.len(),
-            };
-            let sig = format!("pub struct {{ /* {} fields */ }}", field_count);
-            (ItemKind::Struct, Some(sig))
-        }
-        ItemEnum::Enum(e) => {
-            let sig = format!("pub enum {{ /* {} variants */ }}", e.variants.len());
-            (ItemKind::Enum, Some(sig))
-        }
-        ItemEnum::Function(f) => {
-            let sig_str = build_function_signature(&f.sig);
-            (ItemKind::Function, Some(sig_str))
-        }
-        ItemEnum::Trait(t) => {
-            let sig = format!("pub trait {{ /* {} items */ }}", t.items.len());
-            (ItemKind::Trait, Some(sig))
-        }
-        ItemEnum::Constant { .. } => (ItemKind::Constant, None),
-        ItemEnum::TypeAlias(_) => (ItemKind::TypeAlias, None),
-        ItemEnum::Macro(_) => (ItemKind::Macro, None),
-        ItemEnum::Variant(_) => (ItemKind::Variant, None),
-        ItemEnum::StructField(_) => (ItemKind::StructField, None),
-        ItemEnum::Union(_) => (ItemKind::Union, None),
-        ItemEnum::Impl(_) => (ItemKind::Impl, None),
-        _ => (ItemKind::Other, None),
-    }
-}
-
-/// Build a human-readable function signature from rustdoc types.
-fn build_function_signature(sig: &rustdoc_types::FunctionSignature) -> String {
-    let params: Vec<String> = sig
-        .inputs
-        .iter()
-        .map(|(name, _ty)| name.clone())
-        .collect();
-
-    let params_str = params.join(", ");
-    let ret = if sig.output.is_some() {
-        " -> ..."
-    } else {
-        ""
-    };
-
-    format!("fn({}){}", params_str, ret)
-}
