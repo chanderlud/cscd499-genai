@@ -150,6 +150,8 @@ struct TestSummary {
     ignored: u32,
     measured: u32,
     filtered_out: u32,
+    passed_names: Vec<String>,
+    failed_names: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -653,11 +655,23 @@ fn parse_test_summary(stdout: &str, ok: bool) -> TestSummary {
     let re = Regex::new(
         r"test result:\s+(ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed;\s+(\d+)\s+ignored;\s+(\d+)\s+measured;\s+(\d+)\s+filtered out",
     ).unwrap();
+    let test_line_re = Regex::new(r"^test (.+) \.\.\. (ok|FAILED)$").unwrap();
 
     let mut summary = TestSummary {
         ok,
         ..Default::default()
     };
+
+        for line in stdout.lines() {
+            if let Some(caps) = test_line_re.captures(line.trim()) {
+                let name = caps[1].to_string();
+                match &caps[2] {
+                    "ok" => summary.passed_names.push(name),
+                    "FAILED" => summary.failed_names.push(name),
+                    _ => {}
+                }
+            }
+        }
 
     if let Some(caps) = re.captures_iter(stdout).last() {
         summary.ok = &caps[1] == "ok";
