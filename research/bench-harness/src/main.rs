@@ -1,39 +1,50 @@
-use std::ffi::OsStr;
-use std::iter;
-use std::path::Path;
 use std::os::windows::ffi::OsStrExt;
-use windows::core::{PCWSTR, Result};
+use std::path::Path;
+use windows::core::Result;
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_PATH_NOT_FOUND};
 use windows::Win32::Storage::FileSystem::CreateDirectoryW;
-use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 
-#[allow(unused_imports)]
-use windows::core::Error;
+fn wide_null(s: &Path) -> Vec<u16> {
+    s.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
 
 pub fn create_dir_all(path: &Path) -> Result<()> {
-    // Convert Path to wide string with null terminator
-    let wide_path = wide_null(path.as_os_str());
+    let wide_path = wide_null(path);
 
-    // Create directory
-    let result = unsafe {
-        CreateDirectoryW(
-            Some(&PCWSTR(wide_path.as_ptr())),
-            None
-        )
-    };
+    // Try to create the directory
+    let result = unsafe { CreateDirectoryW(windows::core::PCWSTR(wide_path.as_ptr()), None) };
 
-    // Check if error is ERROR_ALREADY_EXISTS
+    // If it already exists, that's fine
     if let Err(e) = result {
         if e.code() == ERROR_ALREADY_EXISTS.into() {
             return Ok(());
         }
-        return Err(e);
+        // If parent directory doesn't exist, create parent first
+        if e.code() == ERROR_PATH_NOT_FOUND.into() {
+            if let Some(parent) = path.parent() {
+                // Recursively create parent directory
+                create_dir_all(parent)?;
+                // Try creating the original directory again
+                let result =
+                    unsafe { CreateDirectoryW(windows::core::PCWSTR(wide_path.as_ptr()), None) };
+                if let Err(e) = result {
+                    if e.code() == ERROR_ALREADY_EXISTS.into() {
+                        return Ok(());
+                    }
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
+        } else {
+            return Err(e);
+        }
     }
 
     Ok(())
-}
-
-fn wide_null(s: &OsStr) -> Vec<u16> {
-    s.encode_wide().chain(iter::once(0)).collect()
 }
 
 fn main() {}

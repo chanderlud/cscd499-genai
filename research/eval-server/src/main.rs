@@ -5,16 +5,18 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::hash_map::DefaultHasher,
     collections::BTreeMap,
     fs, io,
-    path::Path,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
@@ -30,6 +32,9 @@ struct AppState {
     semaphore: Arc<Semaphore>,
     api_key: Option<String>,
     limits: RunnerLimits,
+    template_dir: Arc<PathBuf>,
+    fixed_dependencies: Arc<String>,
+    template_build_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -89,6 +94,12 @@ struct EvaluateResponse {
     build: StepReport,
     clippy: StepReport,
     tests: StepReport,
+}
+
+#[derive(Serialize)]
+struct WarmupResponse {
+    ok: bool,
+    cached: bool,
 }
 
 #[derive(Deserialize)]
@@ -178,10 +189,16 @@ async fn main() -> Result<(), anyhow::Error> {
         .unwrap_or(4);
 
     let api_key = std::env::var("API_KEY").ok();
+    let fixed_dependencies = include_str!("../../rust_dependencies.md").to_string();
+
+    let template_dir = build_template_project(&fixed_dependencies).await?;
 
     let state = AppState {
         semaphore: Arc::new(Semaphore::new(concurrency)),
         api_key,
+        template_dir: Arc::new(template_dir),
+        fixed_dependencies: Arc::new(fixed_dependencies),
+        template_build_lock: Arc::new(tokio::sync::Mutex::new(())),
         limits: RunnerLimits {
             max_output_bytes: 256 * 1024,
             max_diagnostics: 200,
@@ -194,6 +211,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let app = Router::new()
         .route("/evaluate", post(evaluate))
+        .route("/warmup", get(warmup))
         .route("/format", post(format_snippet))
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(512 * 1024))
@@ -206,26 +224,10 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn auth(headers: &HeaderMap, state: &AppState) -> Result<(), AppError> {
-    if let Some(expected) = &state.api_key {
-        let got = headers
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if got != expected {
-            return Err(AppError::Unauthorized);
-        }
-    }
-    Ok(())
-}
-
 async fn evaluate(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(req): Json<EvaluateRequest>,
 ) -> Result<Json<EvaluateResponse>, AppError> {
-    auth(&headers, &state)?;
-
     // Keep your VM alive by not letting everyone compile at once.
     let _permit = state.semaphore.acquire().await.unwrap();
 
@@ -238,8 +240,9 @@ async fn evaluate(
 
     let project_id = format!("{:08x}", randish_u32());
 
-    let temp = TempDir::new()?;
-    write_project(temp.path(), &req.main_rs, &req.dependencies)?;
+    ensure_template_ready(&state).await?;
+    let temp = copy_template(&state.template_dir)?;
+    write_main_rs(temp.path(), &req.main_rs)?;
 
     let build = run_cargo_json_step(
         "build",
@@ -286,12 +289,17 @@ async fn evaluate(
     }))
 }
 
+async fn warmup(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<WarmupResponse>, AppError> {
+    let cached = ensure_template_ready_with_cache_flag(&state).await?;
+    Ok(Json(WarmupResponse { ok: true, cached }))
+}
+
 async fn format_snippet(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(req): Json<FormatRequest>,
 ) -> Result<Json<FormatResponse>, AppError> {
-    auth(&headers, &state)?;
     let _permit = state.semaphore.acquire().await.unwrap();
 
     let temp = TempDir::new()?;
@@ -393,6 +401,109 @@ edition = "2021"
 
     fs::write(root.join("Cargo.toml"), cargo_toml)?;
     fs::write(src.join("main.rs"), &code)?;
+    Ok(())
+}
+
+fn write_main_rs(root: &Path, main_rs: &str) -> Result<(), AppError> {
+    let src = root.join("src");
+    fs::create_dir_all(&src)?;
+    let code = if !main_rs.contains("fn main()") {
+        format!("fn main() {{}}\n\n{}", main_rs)
+    } else {
+        main_rs.to_string()
+    };
+    fs::write(src.join("main.rs"), code)?;
+    Ok(())
+}
+
+async fn build_template_project(deps: &str) -> Result<PathBuf, anyhow::Error> {
+    let mut hasher = DefaultHasher::new();
+    deps.hash(&mut hasher);
+    let hash = hasher.finish();
+    let template_dir = std::env::temp_dir().join(format!("rust_eval_cache_{hash:016x}"));
+    build_template_project_at(&template_dir, deps).await?;
+    Ok(template_dir)
+}
+
+async fn build_template_project_at(dir: &Path, deps: &str) -> Result<(), anyhow::Error> {
+    fs::create_dir_all(dir)?;
+    if is_template_cached(dir) {
+        return Ok(());
+    }
+
+    println!("Building template cache");
+    write_project(dir, "use windows::*;\n fn main() {}", deps)?;
+    let out = run_command_limited(
+        "cargo",
+        &["build", "--message-format=json"],
+        dir,
+        Duration::from_secs(600),
+        4 * 1024 * 1024,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("template build failed: {e}"))?;
+    println!("built template cache");
+
+    if !out.ok {
+        return Err(anyhow::anyhow!(
+            "template build failed with exit_code={:?}: {}",
+            out.exit_code,
+            out.stderr
+        ));
+    }
+    Ok(())
+}
+
+fn is_template_cached(template_dir: &Path) -> bool {
+    let target_dir = template_dir.join("target");
+    if !target_dir.exists() {
+        return false;
+    }
+    match fs::read_dir(target_dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+async fn ensure_template_ready(state: &AppState) -> Result<(), AppError> {
+    let _ = ensure_template_ready_with_cache_flag(state).await?;
+    Ok(())
+}
+
+async fn ensure_template_ready_with_cache_flag(state: &AppState) -> Result<bool, AppError> {
+    if is_template_cached(&state.template_dir) {
+        return Ok(true);
+    }
+
+    let _guard = state.template_build_lock.lock().await;
+    if is_template_cached(&state.template_dir) {
+        return Ok(true);
+    }
+    build_template_project_at(&state.template_dir, &state.fixed_dependencies)
+        .await
+        .map_err(|e| AppError::Process(format!("template warmup failed: {e}")))?;
+    Ok(false)
+}
+
+fn copy_template(template_dir: &Path) -> Result<TempDir, AppError> {
+    let temp = TempDir::new()?;
+    copy_dir_recursive(template_dir, temp.path())?;
+    Ok(temp)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), AppError> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            fs::create_dir_all(&dst_path)?;
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
     Ok(())
 }
 

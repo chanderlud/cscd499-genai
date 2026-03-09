@@ -585,6 +585,15 @@ def build_tools(unit_tests_private: str):
     eval_base = _env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
 
     client = httpx.Client(timeout=30.0)
+    try:
+        warmup_resp = client.get(f"{eval_base}/warmup")
+        warmup_resp.raise_for_status()
+        LOGGER.info(
+            "eval warmup ok response=%s",
+            _preview_text(warmup_resp.json(), limit=160),
+        )
+    except Exception as exc:
+        LOGGER.warning("eval warmup failed error=%s", exc)
 
     @tool("ms_doc_search")
     def ms_doc_search(

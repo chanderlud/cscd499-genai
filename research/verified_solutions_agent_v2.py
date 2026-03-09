@@ -20,7 +20,6 @@ FIXED_DEPENDENCIES = open("rust_dependencies.md", "r").read()
 
 LOGGER = logging.getLogger(__name__)
 
-
 class FinalAnswerException(Exception):
     def __init__(self, main_rs: str):
         super().__init__("final_answer")
@@ -333,7 +332,7 @@ def _summarize_eval(resp: Dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def _build_repair_message(eval_result: Dict[str, Any]) -> str:
+def _build_repair_message(eval_result: Dict[str, Any], main_rs: str) -> str:
     build = eval_result.get("build") if isinstance(eval_result.get("build"), dict) else {}
     clippy = eval_result.get("clippy") if isinstance(eval_result.get("clippy"), dict) else {}
     tests = eval_result.get("tests") if isinstance(eval_result.get("tests"), dict) else {}
@@ -343,6 +342,7 @@ def _build_repair_message(eval_result: Dict[str, Any]) -> str:
     test_summary = tests.get("tests") or {}
 
     parts = []
+    passed = False
 
     if not build.get("ok") or False:
         parts.append("BUILD FAILED. Fix the following errors before calling evaluate_rust again:")
@@ -355,8 +355,14 @@ def _build_repair_message(eval_result: Dict[str, Any]) -> str:
         parts.append("\n[clippy diagnostics]\n" + format_diagnostic_summary(clippy_diagnostics) + "\n Resolve clippy lints.")
     else:
         parts.append("BUILD AND TESTS PASSED. The code is ready for final submission")
+        passed = True
 
-    return "\n".join(parts)
+    repair = "\n".join(parts)
+
+    if not passed:
+        answer = code_help_helper(main_rs, repair, "Explain how to fix the repair messages for the code.")
+
+    return repair + "\n" + answer
 
 
 def format_diagnostic_summary(summary: Mapping[str, Any]) -> str:
@@ -461,7 +467,16 @@ def build_tools(unit_tests_private: str, _eval_state: Optional[dict] = None):
     rustdocs_base = _env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
     eval_base = _env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
 
-    client = httpx.Client(timeout=240.0)
+    client = httpx.Client(timeout=60.0)
+    try:
+        warmup_resp = client.get(f"{eval_base}/warmup", timeout=600)
+        warmup_resp.raise_for_status()
+        LOGGER.info(
+            "eval warmup ok response=%s",
+            _preview_text(warmup_resp.json(), limit=160),
+        )
+    except Exception as exc:
+        LOGGER.warning("eval warmup failed error=%s", exc)
 
     @tool("ms_doc_search")
     def ms_doc_search(
@@ -705,13 +720,78 @@ def build_tools(unit_tests_private: str, _eval_state: Optional[dict] = None):
                 _summarize_tool_output("evaluate_rust", json.dumps(data, ensure_ascii=False)),
             )
             eval_state["last"] = data
-            repair_message = _build_repair_message(data)
+            repair_message = _build_repair_message(data, full_main)
             print(repair_message)
             return repair_message
         except Exception as e:
             duration_ms = int((time.perf_counter() - started) * 1000)
             LOGGER.exception("evaluate_rust error duration_ms=%s main_rs_len=%s", duration_ms, len(main_rs))
             return f"evaluate_rust error: {type(e).__name__}: {e}"
+
+    @tool("code_review")
+    def code_review(main_rs: str, problem_text: str) -> str:
+        """
+        Request an expert code review from an external model before calling final_answer.
+        Use this after evaluate_rust returns ok=true to catch logic errors, unsafe issues,
+        and Clippy violations that the build harness may not surface.
+        Pass the full src/main.rs content and the original problem statement.
+        Returns structured review feedback with a VERDICT, ISSUES, and SUGGESTED_FIXES.
+        """
+        main_rs = _normalize_rust_text(main_rs, field_name="main_rs")
+        run_id = uuid.uuid4().hex[:8]
+
+        prompt = (
+            "You are an expert Rust code reviewer specializing in Windows API programming using the `windows` crate.\n\n"
+            "## Task\n"
+            "Review the Rust code below for correctness, safety, and idiomatic style. The code is a solution to the problem "
+            "described in the \"Problem\" section. Hidden unit tests will be appended and run against this code.\n\n"
+            "## Review Criteria (address each in order)\n"
+            "1. **Correctness** — Does the logic correctly solve the stated problem? Are Win32 API calls used with the right "
+            "arguments, flags, and error-checking patterns?\n"
+            "2. **Safety** — Is `unsafe` minimized and justified? Are raw pointers, handles, and lifetimes managed correctly? "
+            "Are resources (HANDLEs, allocations) properly released?\n"
+            "3. **Error handling** — Are all fallible Win32 calls checked? Is `windows::core::Result` / `HRESULT` propagated correctly?\n"
+            "4. **Idiomatic Rust** — Does the code follow Rust conventions (ownership, borrowing, naming)? Are there unnecessary "
+            "clones, unwraps, or panics?\n"
+            "5. **Clippy compliance** — Would `cargo clippy` flag anything? List specific lints if so.\n"
+            "6. **Import completeness** — Are all `use` paths present and correct for the `windows` crate features used?\n\n"
+            "## Output Format\n"
+            "Respond with a structured review using these exact headings:\n"
+            "### VERDICT\n"
+            "One of: APPROVE | NEEDS_CHANGES | REJECT\n"
+            "(APPROVE = ready to submit; NEEDS_CHANGES = fixable issues found; REJECT = fundamental logic error)\n\n"
+            "### ISSUES\n"
+            "A numbered list of concrete issues. For each issue state: severity (CRITICAL/MAJOR/MINOR), location (line or construct), "
+            "and a specific fix recommendation. If none, write \"None.\"\n\n"
+            "### SUGGESTED_FIXES\n"
+            "For each CRITICAL or MAJOR issue, describe the exact change needed in plain English. Do NOT rewrite the entire file.\n\n"
+            "### SUMMARY\n"
+            "One paragraph summarizing overall quality and the most important action to take next.\n\n"
+            "## Problem\n"
+            f"{problem_text}\n\n"
+            "## Code Under Review\n"
+            "```rust\n"
+            f"{main_rs}\n"
+            "```\n"
+        )
+
+        review = code_help_tool(main_rs, problem_text, prompt, run_id)
+        if not review:
+            return "code_review unavailable (OPENROUTER_API_KEY not set or request failed). Proceed with caution or call final_answer."
+        LOGGER.info("code_review run_id=%s review_len=%s", run_id, len(review))
+        return review
+
+    @tool("code_help")
+    def code_help(main_rs: str, context: str, question: str) -> str:
+        """
+        Request help from an outside expert. Provide the current code
+        and a question. For example, ask how to implement a pattern,
+        how to fix an error, how to use a certain API, etc. The context
+        can include build errors or other information the outside expert
+        will need to help answer the question.
+        """
+        answer = code_help_helper(main_rs, context, question)
+        return answer
 
     @tool("final_answer")
     def final_answer(main_rs: str) -> str:
@@ -723,7 +803,8 @@ def build_tools(unit_tests_private: str, _eval_state: Optional[dict] = None):
             raise ValueError("main_rs must be a non-empty string")
         raise FinalAnswerException(main_rs)
 
-    return [ms_doc_search, rust_win_search, format_rust, evaluate_rust, final_answer], eval_state
+    # TODO re-enable microsoft doc search
+    return [rust_win_search, format_rust, evaluate_rust, code_review, code_help, final_answer], eval_state
 
 
 def build_agent(tools):
@@ -743,6 +824,7 @@ def build_agent(tools):
 
 Hard rules:
 - Use ms_doc_search and rust_win_search to confirm any Win32 API signature/behavior and the correct Rust windows crate path/features.
+- Use the code_help tool when you need help solving a problem in your code.
 - Write stable Rust that compiles as src/main.rs. Do NOT include tests. The judge will append hidden tests after your code.
 - You may call evaluate_rust to run build/clippy/tests. Keep iterating until it reports ok=true.
 - When evaluate_rust returns, read the build diagnostics carefully. If errors say unresolved import or use of undeclared type, add the missing use statements at the top of the file and call evaluate_rust again with corrected code.
@@ -750,6 +832,11 @@ Hard rules:
 - Only before the final output (once evaluate_rust passes without build errors), call format_rust on the final src/main.rs and use the formatted result.
 - When you have a complete, formatted, tested solution, call the final_answer tool with the full src/main.rs content.
 - Do not write a main() function.
+- After evaluate_rust returns ok=true and before calling final_answer, call code_review
+  with the current src/main.rs and the original problem text.
+- If code_review returns VERDICT: NEEDS_CHANGES or REJECT, address all CRITICAL and MAJOR
+  issues listed, then call evaluate_rust again to confirm the fix compiles and passes tests.
+  Only call final_answer when code_review returns VERDICT: APPROVE or only MINOR issues remain.
 
 Quality rules:
 - Prefer safe wrappers. If unsafe is required, minimize scope and justify via comments.
@@ -803,7 +890,6 @@ class SolveResult:
     last_eval: Dict[str, Any]
 
 
-# TODO consider an additional specialist using powerful frontier LLM
 def refactor_with_specialist(main_rs: str, problem_text: str, run_id: str) -> str:
     model = ChatOllama(
         model="hf.co/Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF:Q8_0",
@@ -851,6 +937,81 @@ def refactor_with_specialist(main_rs: str, problem_text: str, run_id: str) -> st
         len(extracted),
     )
     return extracted
+
+
+def code_help_helper(main_rs: str, context: str, question: str):
+    main_rs = _normalize_rust_text(main_rs, field_name="main_rs")
+    run_id = uuid.uuid4().hex[:8]
+
+    prompt = (
+        "You are an expert Rust coder specializing in Windows API programming using the `windows` crate.\n\n"
+        "## Task\n"
+        "Review the provided code, referring to the context as needed. Answer the question in a consist manner "
+        "while including useful information for the user. Do not implement tests, large blocks of code, "
+        "or suggest logging as a solution."
+        "## Context\n"
+        f"{context}\n\n"
+        "## Question\n"
+        f"{question}\n\n"
+        "## Code Under Review\n"
+        "```rust\n"
+        f"{main_rs}\n"
+        "```\n"
+    )
+
+    answer = code_help_tool(main_rs, problem_text, prompt, run_id)
+    if not answer:
+        return "code_help unavailable (OPENROUTER_API_KEY not set or request failed). Proceed with caution or call final_answer."
+    LOGGER.info("code_help run_id=%s review_len=%s", run_id, len(answer))
+    return answer
+
+
+def code_help_tool(main_rs: str, problem_text: str, prompt: str, run_id: str) -> str:
+    """Call OpenRouter /chat/completions for expert code review. Returns review text or '' on error."""
+    api_key = os.getenv("OPENROUTER_API_KEY") or ""
+    if not api_key:
+        LOGGER.warning("review_code_with_openrouter skipped run_id=%s OPENROUTER_API_KEY not set", run_id)
+        return ""
+    base_url = _env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    model = _env("OPENROUTER_REVIEW_MODEL", "arcee-ai/trinity-large-preview:free")
+
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            r = client.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "max_tokens": 2048,
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            choices = data.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                msg = choices[0].get("message") or {}
+                content = msg.get("content")
+                if isinstance(content, str):
+                    return content
+            LOGGER.warning(
+                "review_code_with_openrouter unexpected response run_id=%s keys=%s",
+                run_id,
+                list(data.keys()) if isinstance(data, dict) else "n/a",
+            )
+            return ""
+    except Exception as e:
+        LOGGER.warning(
+            "review_code_with_openrouter failed run_id=%s error=%s: %s",
+            run_id,
+            type(e).__name__,
+            e,
+        )
+        return ""
 
 
 def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int = 6) -> SolveResult:
@@ -978,7 +1139,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                         main_rs=main_rs.rstrip() + "\n",
                         last_eval=last_eval,
                     )
-                feedback = _build_repair_message(last_eval)
+                feedback = _build_repair_message(last_eval, main_rs)
                 refactor_repair_rs = main_rs
                 continue
             refactor_repair_rs = None
@@ -987,7 +1148,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                 last_eval=last_eval,
             )
 
-        feedback = _build_repair_message(last_eval)
+        feedback = _build_repair_message(last_eval, main_rs)
         LOGGER.warning(
             "solve_problem attempt_failed run_id=%s attempt=%s feedback=%r",
             run_id,
@@ -1010,12 +1171,12 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
 if __name__ == "__main__":
     configure_logging()
     problem_text = open(
-        "dataset/simple-winapi/problems/1ca1a7da-8410-41b0-8a87-b6f798f5232f.md",
+        "dataset/simple-winapi/problems/0a5d7328-0ec4-4088-83d2-7e1c0e8b27c7.md",
         "r",
         encoding="utf-8",
     ).read()
     unit_tests_text = open(
-        "dataset/simple-winapi/tests/1ca1a7da-8410-41b0-8a87-b6f798f5232f.rs",
+        "dataset/simple-winapi/tests/0a5d7328-0ec4-4088-83d2-7e1c0e8b27c7.rs",
         "r",
         encoding="utf-8",
     ).read()

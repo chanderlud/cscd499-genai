@@ -245,6 +245,8 @@ async fn main() -> Result<()> {
         .build()
         .context("build reqwest client")?;
 
+    warmup_eval_cache(&client, &cli).await;
+
     let started_unix_ms = now_unix_ms();
 
     let problem_count = problems.len();
@@ -306,6 +308,31 @@ async fn main() -> Result<()> {
     eprintln!("  {}", csv_path.display());
 
     Ok(())
+}
+
+async fn warmup_eval_cache(client: &reqwest::Client, cli: &Cli) {
+    let url = format!("{}/warmup", cli.eval_base.trim_end_matches('/'));
+    let mut req = client.get(url);
+    if let Some(k) = &cli.eval_api_key {
+        req = req.header("X-API-Key", k);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            match resp.text().await {
+                Ok(body) => {
+                    if status.is_success() {
+                        eprintln!("eval warmup succeeded: {body}");
+                    } else {
+                        eprintln!("eval warmup failed HTTP {}: {}", status, body);
+                    }
+                }
+                Err(err) => eprintln!("eval warmup body read failed: {err}"),
+            }
+        }
+        Err(err) => eprintln!("eval warmup request failed: {err}"),
+    }
 }
 
 async fn run_problem(
