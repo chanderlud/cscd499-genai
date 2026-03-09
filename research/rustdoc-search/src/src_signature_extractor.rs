@@ -72,7 +72,73 @@ fn extract_from_contents(contents: &str, name: &str, kind: &ItemKind) -> Option<
     None
 }
 
-fn declaration_matches(line: &str, name: &str, kind: &ItemKind) -> bool {
+/// If `line` is a public item declaration, returns `Some((ItemKind, name))`; otherwise `None`.
+/// Used by the core extractor to discover items when scanning source files.
+pub fn parse_public_declaration(line: &str) -> Option<(ItemKind, String)> {
+    let line = line.trim();
+    if !line.starts_with("pub ") && !line.starts_with("macro_rules! ") {
+        return None;
+    }
+
+    let name_from_rest = |rest: &str| -> Option<String> {
+        let name_end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        let name = rest[..name_end].trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    };
+
+    if let Some(rest) = line.strip_prefix("pub struct ") {
+        name_from_rest(rest).map(|n| (ItemKind::Struct, n))
+    } else if let Some(rest) = line.strip_prefix("pub enum ") {
+        name_from_rest(rest).map(|n| (ItemKind::Enum, n))
+    } else if let Some(rest) = line.strip_prefix("pub union ") {
+        name_from_rest(rest).map(|n| (ItemKind::Union, n))
+    } else if let Some(rest) = line.strip_prefix("pub const ") {
+        name_from_rest(rest).map(|n| (ItemKind::Constant, n))
+    } else if let Some(rest) = line.strip_prefix("pub type ") {
+        name_from_rest(rest).map(|n| (ItemKind::TypeAlias, n))
+    } else if let Some(rest) = line.strip_prefix("pub trait ") {
+        name_from_rest(rest).map(|n| (ItemKind::Trait, n))
+    } else if let Some(rest) = line.strip_prefix("pub mod ") {
+        name_from_rest(rest).map(|n| (ItemKind::Module, n))
+    } else if line.starts_with("macro_rules! ") {
+        let rest = line.strip_prefix("macro_rules! ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Macro, n))
+    } else if line.starts_with("pub macro ") {
+        let rest = line.strip_prefix("pub macro ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Macro, n))
+    } else if line.starts_with("pub fn ") {
+        let rest = line.strip_prefix("pub fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub unsafe fn ") {
+        let rest = line.strip_prefix("pub unsafe fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub async fn ") {
+        let rest = line.strip_prefix("pub async fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub async unsafe fn ") {
+        let rest = line.strip_prefix("pub async unsafe fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub unsafe async fn ") {
+        let rest = line.strip_prefix("pub unsafe async fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub extern ") {
+        if let Some(after_fn) = line.split_once("fn ").map(|(_, r)| r) {
+            name_from_rest(after_fn).map(|n| (ItemKind::Function, n))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+pub fn declaration_matches(line: &str, name: &str, kind: &ItemKind) -> bool {
     match kind {
         ItemKind::Function => {
             matches_named_prefix(line, "pub fn ", name)
@@ -125,7 +191,7 @@ fn is_name_boundary(next: Option<char>) -> bool {
     )
 }
 
-fn collect_signature(lines: &[&str], start_idx: usize, kind: &ItemKind) -> Option<String> {
+pub fn collect_signature(lines: &[&str], start_idx: usize, kind: &ItemKind) -> Option<String> {
     let mut collected_lines = Vec::new();
 
     for line in lines.iter().skip(start_idx) {
@@ -158,7 +224,7 @@ fn signature_complete(kind: &ItemKind, collected: &str) -> bool {
     }
 }
 
-fn normalize_signature(kind: &ItemKind, collected: &str) -> Option<String> {
+pub fn normalize_signature(kind: &ItemKind, collected: &str) -> Option<String> {
     let normalized = collected.trim();
     if normalized.is_empty() {
         return None;

@@ -115,6 +115,21 @@ impl SearchIndex {
         Ok(Self { items })
     }
 
+    /// Load supplement items from a JSON file (e.g. `windows-core-items.json`).
+    /// Returns an empty vec if the file does not exist.
+    pub fn load_supplement(path: &Path) -> Result<Vec<DocItem>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let json = std::fs::read_to_string(path).with_context(|| {
+            format!("Failed to read supplement from {}", path.display())
+        })?;
+        let items: Vec<DocItem> = serde_json::from_str(&json).with_context(|| {
+            format!("Failed to deserialize supplement from {}", path.display())
+        })?;
+        Ok(items)
+    }
+
     /// Get the total number of items in the index.
     pub fn len(&self) -> usize {
         self.items.len()

@@ -38,8 +38,17 @@ async fn main() -> Result<()> {
 
     // Step 2: Parse documentation into search index
     println!("Loading documentation index...");
-    let index = SearchIndex::from_docs(&docs_result.source, &docs_result.paths)
+    let mut index = SearchIndex::from_docs(&docs_result.source, &docs_result.paths)
         .context("Failed to parse documentation index")?;
+
+    let supplement_path = project_root.join("data").join("windows-core-items.json");
+    let supplement_items = SearchIndex::load_supplement(&supplement_path)
+        .context("Failed to load windows::core supplement")?;
+    let supplement_len = supplement_items.len();
+    if supplement_len > 0 {
+        index.items.extend(supplement_items);
+        println!("Loaded {} windows::core items from supplement.", supplement_len);
+    }
 
     if index.is_empty() {
         eprintln!("Warning: Documentation index is empty. Search will return no results.");
