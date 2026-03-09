@@ -35,8 +35,8 @@ from typing import Optional, Tuple
 import requests
 
 
-DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4.1-mini")
-DEFAULT_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "hf.co/Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF:Q8_0")
+DEFAULT_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "http://localhost:11434/v1")
 
 
 PROMPT_TEMPLATE = """You are an expert Rust developer and test engineer.
@@ -175,7 +175,7 @@ def main() -> int:
     ap.add_argument("--retries", type=int, default=6, help="Retry count for transient errors (default: 6)")
     args = ap.parse_args()
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY", "ollama")
     if not api_key and not args.dry_run:
         print("ERROR: OPENROUTER_API_KEY is not set.", file=sys.stderr)
         return 2

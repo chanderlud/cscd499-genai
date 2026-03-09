@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Mapping, Sequence
 
 import httpx
 
@@ -263,27 +263,120 @@ def _summarize_eval(resp: Dict[str, Any]) -> str:
 def _build_repair_message(eval_result: Dict[str, Any]) -> str:
     build = eval_result.get("build") if isinstance(eval_result.get("build"), dict) else {}
     clippy = eval_result.get("clippy") if isinstance(eval_result.get("clippy"), dict) else {}
+    tests = eval_result.get("tests") if isinstance(eval_result.get("tests"), dict) else {}
 
-    build_stderr = (build.get("stderr") or "").strip()
-    clippy_stderr = (clippy.get("stderr") or "").strip()
+    build_diagnostics = build.get("diagnostics") or {}
+    clippy_diagnostics = clippy.get("diagnostics") or {}
+    test_summary = tests.get("tests") or {}
 
-    parts = ["BUILD FAILED. Fix the following errors before calling evaluate_rust again:"]
+    parts = []
 
-    if build_stderr:
-        parts.append("\n[build stderr]\n" + build_stderr)
+    if not build.get("ok") or False:
+        parts.append("BUILD FAILED. Fix the following errors before calling evaluate_rust again:")
+    elif not tests.get("ok") or False:
+        parts.append("TESTS FAILED. Fix the following errors before calling evaluate_rust again:")
 
-    if clippy_stderr:
-        parts.append("\n[clippy stderr]\n" + clippy_stderr)
+    if build_diagnostics:
+        parts.append("\n[build diagnostics]\n" + format_diagnostic_summary(build_diagnostics))
 
-    if not build_stderr and not clippy_stderr:
-        parts.append(
-            "\nNo build/clippy stderr was provided. Inspect the evaluation JSON and correct the code before retrying."
-        )
+    if clippy_diagnostics:
+        parts.append("\n[clippy diagnostics]\n" + format_diagnostic_summary(clippy_diagnostics))
 
     parts.append(
-        "\nYou MUST add missing use statements, fix unresolved imports or undeclared types, and resubmit corrected code."
+        "\nYou MUST add missing use statements, fix unresolved imports or undeclared types, and resubmit corrected code. Do not forget the Windows Crate Hints."
     )
+
+    if test_summary:
+        parts.append("\n[test summary]\n" + json.dumps(test_summary))
+        parts.append("You MUST modify the code to pass the unit tests in `failed_names` use the names as hints of what behavior is incorrect in the current code.")
+
+    if not build_diagnostics and not clippy_diagnostics:
+        parts.append(
+            "\nNo build/clippy diagnostics were available. Inspect the evaluation JSON and correct the code before retrying."
+        )
+
     return "\n".join(parts)
+
+
+def format_diagnostic_summary(summary: Mapping[str, Any]) -> str:
+    def _as_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _as_bool(value: Any) -> bool:
+        return bool(value)
+
+    def _as_str(value: Any, default: str = "") -> str:
+        if value is None:
+            return default
+        return str(value)
+
+    def _indent_block(text: str, prefix: str = "    ") -> str:
+        return "\n".join(prefix + line if line else prefix.rstrip() for line in text.splitlines())
+
+    errors = _as_int(summary.get("errors"))
+    warnings = _as_int(summary.get("warnings"))
+    notes = _as_int(summary.get("notes"))
+    helps = _as_int(summary.get("helps"))
+    truncated = _as_bool(summary.get("truncated"))
+
+    by_code = summary.get("by_code") or {}
+    if not isinstance(by_code, Mapping):
+        by_code = {}
+
+    items = summary.get("items") or []
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        items = []
+
+    lines: list[str] = []
+
+    # Header
+    lines.append("Diagnostic Summary")
+    lines.append("==================")
+    lines.append(f"errors: {errors}")
+    lines.append(f"warnings: {warnings}")
+    lines.append(f"notes: {notes}")
+    lines.append(f"helps: {helps}")
+    lines.append(f"items: {len(items)}")
+    lines.append(f"truncated: {'yes' if truncated else 'no'}")
+
+    # Codes section
+    lines.append("")
+    lines.append("By code")
+    lines.append("-------")
+    if by_code:
+        for code, count in sorted(by_code.items(), key=lambda kv: (str(kv[0]), kv[1])):
+            lines.append(f"{code}: {_as_int(count)}")
+    else:
+        lines.append("(none)")
+
+    # Items section
+    lines.append("")
+    lines.append("Items")
+    lines.append("-----")
+    if items:
+        for i, item in enumerate(items, start=1):
+            if not isinstance(item, Mapping):
+                lines.append(f"{i}. <invalid item: {item!r}>")
+                continue
+
+            level = _as_str(item.get("level"), "unknown")
+            code = item.get("code")
+            message = _as_str(item.get("message"))
+            rendered = item.get("rendered")
+
+            code_suffix = f" [{code}]" if code else ""
+            lines.append(f"{i}. {level}{code_suffix}: {message}")
+
+            if rendered:
+                lines.append("   rendered:")
+                lines.append(_indent_block(_as_str(rendered), prefix="     "))
+    else:
+        lines.append("(none)")
+
+    return "\n".join(lines)
 
 
 def _extract_json_object(text: str) -> Dict[str, Any]:
@@ -426,7 +519,10 @@ def build_tools(unit_tests_private: str):
         max_enrich: int = 8,
     ) -> str:
         """
-        Search Microsoft docs (Win32) for C/C++ signatures, behavior, examples, etc.
+        Search Microsoft docs (Win32) for C/C++ signatures, behavior, and examples.
+
+        Args:
+            q: A WinAPI function name or other item. Not for general questions
         """
         started = time.perf_counter()
         LOGGER.debug(
@@ -474,21 +570,28 @@ def build_tools(unit_tests_private: str):
             return f"ms_doc_search error: {type(e).__name__}: {e}"
 
     @tool("rust_win_search")
-    def rust_win_search(q: str, kind: Optional[str] = "function", limit: int = 5) -> str:
+    def rust_win_search(q: str, limit: int = 5) -> str:
         """
-        Search Rust Windows API docs for windows crate paths, signatures, etc.
+        Search Rust Windows API docs for windows crate paths and signatures. This is *not* a question answering tool.
+
+        Args:
+            query: A Rust item such as function, struct, const, or trait
+            limit: Maximum number of results to return
         """
+
+        if "::" in q:
+            q = q.split("::")[-1]
+
         started = time.perf_counter()
         LOGGER.debug(
-            "rust_win_search request q=%r kind=%s limit=%s",
+            "rust_win_search request q=%r limit=%s",
             _preview_text(q, limit=120),
-            kind,
             limit,
         )
         try:
             r = client.get(
                 f"{rustdocs_base}/search",
-                params={"q": q, "kind": kind, "limit": limit},
+                params={"q": q, "limit": limit},
             )
             r.raise_for_status()
             data = r.json()
@@ -575,11 +678,9 @@ def build_tools(unit_tests_private: str):
                 duration_ms,
                 _summarize_tool_output("evaluate_rust", json.dumps(data, ensure_ascii=False)),
             )
-            raw_json = json.dumps(data, ensure_ascii=False, indent=2)
-            if data.get("ok") is False:
-                repair_message = _build_repair_message(data)
-                return f"{repair_message}\n\n--- raw JSON ---\n{raw_json}"[:24000]
-            return raw_json[:24000]
+            repair_message = _build_repair_message(data)
+            print(repair_message)
+            return repair_message
         except Exception as e:
             duration_ms = int((time.perf_counter() - started) * 1000)
             LOGGER.exception("evaluate_rust error duration_ms=%s main_rs_len=%s", duration_ms, len(main_rs))
@@ -599,9 +700,12 @@ def build_tools(unit_tests_private: str):
 
 
 def build_agent(tools):
+    model_name = os.getenv("OLLAMA_MODEL", "glm-4.7-flash:latest")
+    model_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
     model = ChatOllama(
-        model=os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest"),
-        base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        model=model_name,
+        base_url=model_url,
         temperature=0,
         num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "8000")),
     )
@@ -612,22 +716,45 @@ Hard rules:
 - Use ms_doc_search and rust_win_search to confirm any Win32 API signature/behavior and the correct Rust windows crate path/features.
 - Write stable Rust that compiles as src/main.rs. Do NOT include tests. The judge will append hidden tests after your code.
 - You may call evaluate_rust to run build/clippy/tests. Keep iterating until it reports ok=true.
-- When evaluate_rust returns build.ok=false, read the full stderr carefully. If errors say unresolved import or use of undeclared type, add the missing use statements at the top of the file and call evaluate_rust again with corrected code.
+- When evaluate_rust returns, read the build diagnostics carefully. If errors say unresolved import or use of undeclared type, add the missing use statements at the top of the file and call evaluate_rust again with corrected code.
 - Do NOT call evaluate_rust again with identical code after a failed build. You must make a concrete repair first.
-- Before final output, call format_rust on the final src/main.rs and use the formatted result.
+- Only before the final output (once evaluate_rust passes without build errors), call format_rust on the final src/main.rs and use the formatted result.
 - When you have a complete, formatted, tested solution, call the final_answer tool with the full src/main.rs content.
 
 Quality rules:
 - Prefer safe wrappers. If unsafe is required, minimize scope and justify via comments.
-- Handle Win32 error returns properly (GetLastError / HRESULT / WSAGetLastError as appropriate).
+- Always include this import at top of the output (even if unused):
+  #[allow(unused_imports)]
+  use windows::core::{Result, Error};
+- Utilize error propagation on API methods that return Result.
+- When API methods do not return Result directly, use the appropriate pattern to check the return for success, get the last error if needed, and return an error.
 - Dependencies are fixed and MUST NOT be output by the model.
 - The windows, rand, md5, and regex crates are available for use. The rust_win_search tool provides import paths in the windows crate.
+
+Windows Crate Hints:
+- Prefer using the W variants of functions
+- Functions that accept a `windows_core::Param<T>`` expect `Some(&T)`` as the parameter
+- Functions that accept a specific Option<T> may have Some(T) or None as the parameter
+
+The following helper may be used to create wide strings
+```
+use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+
+fn wide_null(s: &OsStr) -> Vec<u16> {
+    s.encode_wide().chain(iter::once(0)).collect()
+}
+
+fn example() {
+     let wide_str = wide_null(OsStr::new(r""));
+     SomeFunctionW(Some(&PCWSTR(wide_str.as_ptr()));
+}
+```
 """
 
     LOGGER.info(
         "build_agent model=%s base_url=%s tool_count=%s",
-        os.getenv("OLLAMA_MODEL", "qwen2.5-coder:latest"),
-        os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        model_name,
+        model_url,
         len(tools),
     )
 
@@ -695,6 +822,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
             duration_ms = int((time.perf_counter() - invoke_started) * 1000)
 
             msgs = result.get("messages") or []
+            print(msgs)
             last = msgs[-1] if msgs else None
             content = _extract_message_text(last)
             LOGGER.debug(
