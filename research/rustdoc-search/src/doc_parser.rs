@@ -81,6 +81,8 @@ pub struct DocItem {
     pub docs: Option<String>,
     /// Item signature or declaration (if available).
     pub signature: Option<String>,
+    /// Parent item path for associated items (e.g., methods on a struct).
+    pub parent_path: Option<String>,
 }
 
 /// A searchable index built from parsed documentation.
@@ -225,6 +227,7 @@ fn parse_all_items_html(html: &str) -> Result<Vec<DocItem>> {
                         path: full_path,
                         docs: None,      // HTML listing doesn't include docs
                         signature: None, // HTML listing doesn't include signatures
+                        parent_path: None,
                     });
                 }
             }

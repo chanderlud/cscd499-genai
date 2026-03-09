@@ -11,6 +11,8 @@ pub struct SearchResult {
     pub kind: ItemKind,
     /// Full module path.
     pub path: String,
+    /// Parent item path for associated items, if any.
+    pub parent_path: Option<String>,
     /// Item signature or declaration.
     pub signature: Option<String>,
     /// Documentation text.
@@ -143,6 +145,7 @@ fn score_item(item: &DocItem, keywords: &[String]) -> Option<SearchResult> {
         name: item.name.clone(),
         kind: item.kind.clone(),
         path: item.path.clone(),
+        parent_path: item.parent_path.clone(),
         signature: item.signature.clone(),
         documentation: item.docs.clone(),
         relevance: (normalized_score * 100.0).round() / 100.0, // Round to 2 decimal places
@@ -164,6 +167,7 @@ mod tests {
                     path: "windows::Win32::System::Com::IUnknown".to_string(),
                     docs: Some("Base interface for all COM objects.".to_string()),
                     signature: Some("pub struct IUnknown { ... }".to_string()),
+                    parent_path: None,
                 },
                 DocItem {
                     id: "2".to_string(),
@@ -172,6 +176,7 @@ mod tests {
                     path: "windows::Win32::System::Com::CoInitializeEx".to_string(),
                     docs: Some("Initializes the COM library.".to_string()),
                     signature: Some("fn(dwcoinit: u32) -> ...".to_string()),
+                    parent_path: None,
                 },
                 DocItem {
                     id: "3".to_string(),
@@ -180,6 +185,7 @@ mod tests {
                     path: "windows::core::HRESULT".to_string(),
                     docs: Some("A 32-bit value used to describe an error or warning.".to_string()),
                     signature: Some("pub struct HRESULT(pub i32)".to_string()),
+                    parent_path: None,
                 },
                 DocItem {
                     id: "4".to_string(),
@@ -188,6 +194,7 @@ mod tests {
                     path: "windows::SomeEnum::Unknown".to_string(),
                     docs: None,
                     signature: None,
+                    parent_path: None,
                 },
             ],
         }

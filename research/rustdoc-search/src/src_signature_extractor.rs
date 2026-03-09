@@ -76,7 +76,11 @@ fn extract_from_contents(contents: &str, name: &str, kind: &ItemKind) -> Option<
 /// Used by the core extractor to discover items when scanning source files.
 pub fn parse_public_declaration(line: &str) -> Option<(ItemKind, String)> {
     let line = line.trim();
-    if !line.starts_with("pub ") && !line.starts_with("macro_rules! ") {
+    if !line.starts_with("pub ")
+        && !line.starts_with("pub(crate) ")
+        && !line.starts_with("pub(super) ")
+        && !line.starts_with("macro_rules! ")
+    {
         return None;
     }
 
@@ -94,6 +98,10 @@ pub fn parse_public_declaration(line: &str) -> Option<(ItemKind, String)> {
 
     if let Some(rest) = line.strip_prefix("pub struct ") {
         name_from_rest(rest).map(|n| (ItemKind::Struct, n))
+    } else if let Some(rest) = line.strip_prefix("pub(crate) struct ") {
+        name_from_rest(rest).map(|n| (ItemKind::Struct, n))
+    } else if let Some(rest) = line.strip_prefix("pub(super) struct ") {
+        name_from_rest(rest).map(|n| (ItemKind::Struct, n))
     } else if let Some(rest) = line.strip_prefix("pub enum ") {
         name_from_rest(rest).map(|n| (ItemKind::Enum, n))
     } else if let Some(rest) = line.strip_prefix("pub union ") {
@@ -103,6 +111,10 @@ pub fn parse_public_declaration(line: &str) -> Option<(ItemKind, String)> {
     } else if let Some(rest) = line.strip_prefix("pub type ") {
         name_from_rest(rest).map(|n| (ItemKind::TypeAlias, n))
     } else if let Some(rest) = line.strip_prefix("pub trait ") {
+        name_from_rest(rest).map(|n| (ItemKind::Trait, n))
+    } else if let Some(rest) = line.strip_prefix("pub(crate) trait ") {
+        name_from_rest(rest).map(|n| (ItemKind::Trait, n))
+    } else if let Some(rest) = line.strip_prefix("pub(super) trait ") {
         name_from_rest(rest).map(|n| (ItemKind::Trait, n))
     } else if let Some(rest) = line.strip_prefix("pub mod ") {
         name_from_rest(rest).map(|n| (ItemKind::Module, n))
@@ -114,6 +126,12 @@ pub fn parse_public_declaration(line: &str) -> Option<(ItemKind, String)> {
         name_from_rest(rest).map(|n| (ItemKind::Macro, n))
     } else if line.starts_with("pub fn ") {
         let rest = line.strip_prefix("pub fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub(crate) fn ") {
+        let rest = line.strip_prefix("pub(crate) fn ").unwrap();
+        name_from_rest(rest).map(|n| (ItemKind::Function, n))
+    } else if line.starts_with("pub(super) fn ") {
+        let rest = line.strip_prefix("pub(super) fn ").unwrap();
         name_from_rest(rest).map(|n| (ItemKind::Function, n))
     } else if line.starts_with("pub unsafe fn ") {
         let rest = line.strip_prefix("pub unsafe fn ").unwrap();
@@ -193,13 +211,15 @@ fn is_name_boundary(next: Option<char>) -> bool {
 
 pub fn collect_signature(lines: &[&str], start_idx: usize, kind: &ItemKind) -> Option<String> {
     let mut collected_lines = Vec::new();
+    let mut has_content = false;
 
     for line in lines.iter().skip(start_idx) {
         let trimmed_end = line.trim_end();
-        if trimmed_end.trim().is_empty() {
+        if !has_content && trimmed_end.trim().is_empty() {
             continue;
         }
 
+        has_content = true;
         collected_lines.push(trimmed_end);
 
         let current = collected_lines.join("\n");
@@ -214,12 +234,16 @@ pub fn collect_signature(lines: &[&str], start_idx: usize, kind: &ItemKind) -> O
 }
 
 fn signature_complete(kind: &ItemKind, collected: &str) -> bool {
+    if collected.trim_end().ends_with(';') {
+        return true;
+    }
+
     match kind {
-        ItemKind::Function => collected.contains('{') || collected.ends_with(';'),
+        ItemKind::Function => find_body_open_brace(collected).is_some(),
         ItemKind::Struct | ItemKind::Enum | ItemKind::Union | ItemKind::Trait | ItemKind::Macro => {
-            collected.contains('{') || collected.ends_with(';')
+            find_body_open_brace(collected).is_some()
         }
-        ItemKind::Constant | ItemKind::TypeAlias | ItemKind::Module => collected.ends_with(';'),
+        ItemKind::Constant | ItemKind::TypeAlias | ItemKind::Module => false,
         _ => false,
     }
 }
@@ -241,8 +265,8 @@ pub fn normalize_signature(kind: &ItemKind, collected: &str) -> Option<String> {
 }
 
 fn trim_before_body(signature: &str) -> Option<String> {
-    if let Some((prefix, _)) = signature.split_once('{') {
-        Some(prefix.trim().to_string())
+    if let Some(idx) = find_body_open_brace(signature) {
+        Some(signature[..idx].trim().to_string())
     } else if let Some((prefix, _)) = signature.split_once(';') {
         Some(prefix.trim().to_string())
     } else {
@@ -251,13 +275,39 @@ fn trim_before_body(signature: &str) -> Option<String> {
 }
 
 fn keep_declaration_prefix(signature: &str) -> Option<String> {
-    if let Some((prefix, _)) = signature.split_once('{') {
-        Some(format!("{} {{", prefix.trim()))
+    if let Some(idx) = find_body_open_brace(signature) {
+        Some(format!("{} {{", signature[..idx].trim()))
     } else if let Some((prefix, _)) = signature.split_once(';') {
         Some(format!("{};", prefix.trim()))
     } else {
         Some(signature.trim().to_string())
     }
+}
+
+fn find_body_open_brace(s: &str) -> Option<usize> {
+    let mut angle_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => {
+                angle_depth = angle_depth.saturating_sub(1);
+            }
+            '{' if angle_depth == 0 => {
+                brace_depth += 1;
+                if brace_depth == 1 {
+                    return Some(idx);
+                }
+            }
+            '}' if angle_depth == 0 => {
+                brace_depth = brace_depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn keep_through_semicolon(signature: &str) -> Option<String> {
