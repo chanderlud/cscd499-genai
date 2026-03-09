@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Mapping, Sequence
 import httpx
 
 from langchain.agents import create_agent
-from langchain_core.messages import ToolMessage, trim_messages
+from langchain_core.messages import HumanMessage, ToolMessage, trim_messages
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
@@ -165,11 +165,26 @@ def _compress_old_tool_messages(messages: Sequence[Any], keep_last_n: int = 1) -
 
 
 def _apply_context_window(messages: Sequence[Any], model: Any, max_tokens: int) -> list[Any]:
+    def _approx_message_tokens(message: Any) -> int:
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        else:
+            text = _extract_message_text(message)
+
+        # Roughly 1 token ~= 4 chars plus a small per-message envelope.
+        return max(1, len(text) // 4) + 8
+
+    def _approx_token_counter(message_list: Sequence[Any]) -> int:
+        if not message_list:
+            return 0
+        return sum(_approx_message_tokens(message) for message in message_list)
+
     trimmed = trim_messages(
         list(messages),
         strategy="last",
         include_system=True,
-        token_counter=model,
+        token_counter=_approx_token_counter,
         max_tokens=max_tokens,
         start_on="human",
         allow_partial=False,
@@ -599,7 +614,7 @@ def build_tools(unit_tests_private: str):
         Search Microsoft docs (Win32) for C/C++ signatures, behavior, and examples.
 
         Args:
-            q: A WinAPI function name or other item. Not for general questions
+            q: A WinAPI function name or other item
         """
         started = time.perf_counter()
         LOGGER.debug(
@@ -851,6 +866,55 @@ class SolveResult:
     last_eval: Dict[str, Any]
 
 
+def refactor_with_specialist(main_rs: str, problem_text: str, run_id: str) -> str:
+    model = ChatOllama(
+        model="hf.co/Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF:Q8_0",
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        temperature=0,
+        num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "8000")),
+    )
+    prompt = (
+        "Refactor the provided Rust code for idiomatic style, stronger error handling, reduced unsafe scope, "
+        "and Clippy compliance, without changing observable behavior or breaking tests.\n\n"
+        "Problem context:\n"
+        f"{problem_text}\n\n"
+        "Current src/main.rs:\n"
+        "```rust\n"
+        f"{main_rs}\n"
+        "```\n\n"
+        "Respond with only the refactored src/main.rs content inside a single ```rust ... ``` fence and nothing else."
+    )
+    try:
+        response = model.invoke([HumanMessage(content=prompt)])
+    except Exception as exc:
+        LOGGER.warning(
+            "refactor_with_specialist failed run_id=%s error=%s: %s",
+            run_id,
+            type(exc).__name__,
+            exc,
+        )
+        return main_rs
+
+    response_text = _extract_message_text(response)
+    match = re.search(r"```rust\s*(.*?)```", response_text, re.DOTALL)
+    extracted = match.group(1).strip() if match else response_text.strip()
+    if not extracted:
+        LOGGER.warning(
+            "refactor_with_specialist extraction_failed run_id=%s response_len=%s",
+            run_id,
+            len(response_text),
+        )
+        return main_rs
+
+    LOGGER.info(
+        "refactor_with_specialist run_id=%s before_len=%s after_len=%s",
+        run_id,
+        len(main_rs),
+        len(extracted),
+    )
+    return extracted
+
+
 def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int = 6) -> SolveResult:
     run_id = uuid.uuid4().hex[:8]
     tools = build_tools(unit_tests_private)
@@ -859,6 +923,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
 
     feedback = ""
     last_eval: Dict[str, Any] = {}
+    refactor_done = False
 
     LOGGER.info(
         "solve_problem start run_id=%s problem_len=%s hidden_tests_len=%s max_attempts=%s",
@@ -1068,6 +1133,11 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                 attempt,
                 _preview_text(last_eval, limit=240),
             )
+            if not refactor_done:
+                main_rs = refactor_with_specialist(main_rs, problem_text, run_id)
+                refactor_done = True
+                feedback = "Refactored for code quality. Re-verify correctness."
+                continue
             return SolveResult(
                 main_rs=main_rs.rstrip() + "\n",
                 last_eval=last_eval,
