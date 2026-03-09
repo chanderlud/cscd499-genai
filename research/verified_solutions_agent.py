@@ -6,12 +6,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from collections import defaultdict
 from typing import Any, Dict, Optional, Mapping, Sequence
 
 import httpx
 
 from langchain.agents import create_agent
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, trim_messages
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
@@ -125,6 +126,80 @@ def _summarize_tool_output(tool_name: str, tool_out: str) -> str:
         summary["results"] = len(results)
 
     return _preview_text(summary or payload, limit=240)
+
+
+def _truncate_feedback(feedback: str, max_chars: int) -> str:
+    if not isinstance(feedback, str):
+        return ""
+    if max_chars <= 0:
+        return "... [truncated]"
+    if len(feedback) <= max_chars:
+        return feedback
+    return feedback[-max_chars:] + "... [truncated]"
+
+
+def _compress_old_tool_messages(messages: Sequence[Any], keep_last_n: int = 1) -> list[Any]:
+    copied = list(messages)
+    if keep_last_n < 0:
+        keep_last_n = 0
+
+    tool_indexes: dict[str, list[int]] = defaultdict(list)
+    for index, message in enumerate(copied):
+        if isinstance(message, ToolMessage):
+            tool_name = getattr(message, "name", None) or "unknown_tool"
+            tool_indexes[tool_name].append(index)
+
+    for tool_name, indexes in tool_indexes.items():
+        stale_indexes = indexes[:-keep_last_n] if keep_last_n > 0 else indexes
+        for stale_index in stale_indexes:
+            original = copied[stale_index]
+            original_text = _extract_message_text(original)
+            summary = _summarize_tool_output(tool_name, original_text)
+            copied[stale_index] = ToolMessage(
+                content=f"[compressed previous {tool_name} output] {summary}",
+                tool_call_id=original.tool_call_id,
+                name=getattr(original, "name", None),
+            )
+
+    return copied
+
+
+def _apply_context_window(messages: Sequence[Any], model: Any, max_tokens: int) -> list[Any]:
+    trimmed = trim_messages(
+        list(messages),
+        strategy="last",
+        include_system=True,
+        token_counter=model,
+        max_tokens=max_tokens,
+        start_on="human",
+        allow_partial=False,
+    )
+    original_human = None
+    for message in messages:
+        if isinstance(message, dict):
+            if message.get("role") in {"human", "user"}:
+                original_human = message
+                break
+            continue
+        if getattr(message, "type", None) == "human":
+            original_human = message
+            break
+
+    if original_human is None:
+        return list(trimmed)
+
+    if not trimmed:
+        return [original_human]
+
+    first = trimmed[0]
+    first_is_human = (
+        isinstance(first, dict) and first.get("role") in {"human", "user"}
+    ) or (getattr(first, "type", None) == "human")
+
+    if first_is_human:
+        return list(trimmed)
+
+    return [original_human, *list(trimmed)]
 
 
 def _extract_windows_path_reference(value: str) -> Optional[tuple[str, str]]:
@@ -288,7 +363,9 @@ def _build_repair_message(eval_result: Dict[str, Any]) -> str:
 
     if test_summary:
         parts.append("\n[test summary]\n" + json.dumps(test_summary))
-        parts.append("You MUST modify the code to pass the unit tests in `failed_names` use the names as hints of what behavior is incorrect in the current code.")
+
+        if test_summary.get("failed") or 0 > 0:
+            parts.append("You MUST modify the code to pass the unit tests in `failed_names` use the names as hints of what behavior is incorrect in the current code.")
 
     if not build_diagnostics and not clippy_diagnostics:
         parts.append(
@@ -709,6 +786,7 @@ def build_agent(tools):
         temperature=0,
         num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "8000")),
     )
+    context_limit = int(os.getenv("OLLAMA_CONTEXT_TOKENS", "6000"))
 
     system_prompt = """You solve Win32/Windows API programming problems in Rust.
 
@@ -764,7 +842,7 @@ fn example() {
         system_prompt=system_prompt,
     )
 
-    return agent.with_config({"recursion_limit": 40})
+    return agent.with_config({"recursion_limit": 40}), model, context_limit
 
 
 @dataclass
@@ -776,7 +854,7 @@ class SolveResult:
 def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int = 6) -> SolveResult:
     run_id = uuid.uuid4().hex[:8]
     tools = build_tools(unit_tests_private)
-    agent = build_agent(tools)
+    agent, agent_model, context_limit = build_agent(tools)
     tool_map = {t.name: t for t in tools}
 
     feedback = ""
@@ -798,7 +876,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
             len(feedback),
         )
         run_input = problem_text if not feedback else (
-            problem_text + "\n\n---\nREPAIR FEEDBACK:\n" + feedback
+            problem_text + "\n\n---\nREPAIR FEEDBACK:\n" + _truncate_feedback(feedback, 3000)
         )
 
         messages = [{"role": "user", "content": run_input}]
@@ -807,6 +885,8 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
 
         for tool_hops in range(40):
             invoke_started = time.perf_counter()
+            messages = _compress_old_tool_messages(messages, keep_last_n=1)
+            messages = _apply_context_window(messages, model=agent_model, max_tokens=context_limit)
             try:
                 result = agent.invoke({"messages": messages})
             except FinalAnswerException as answer:
@@ -871,7 +951,13 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                             tool_hops,
                             tool_name,
                         )
-                        messages = list(msgs) + [ToolMessage(content=tool_out, tool_call_id=f"manual_{tool_hops}")]
+                        messages = list(msgs) + [
+                            ToolMessage(
+                                content=tool_out,
+                                tool_call_id=f"manual_{tool_hops}",
+                                name=tool_name,
+                            )
+                        ]
                         continue
 
                 LOGGER.info(
@@ -910,7 +996,13 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                     _summarize_tool_output(tool_name, tool_out),
                 )
 
-                messages = list(msgs) + [ToolMessage(content=tool_out, tool_call_id=f"manual_{tool_hops}")]
+                messages = list(msgs) + [
+                    ToolMessage(
+                        content=tool_out,
+                        tool_call_id=f"manual_{tool_hops}",
+                        name=tool_name,
+                    )
+                ]
                 continue
 
             if _is_final_answer(obj):
