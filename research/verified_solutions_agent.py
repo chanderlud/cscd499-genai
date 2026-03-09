@@ -611,10 +611,45 @@ def build_tools(unit_tests_private: str):
         max_enrich: int = 8,
     ) -> str:
         """
-        Search Microsoft docs (Win32) for C/C++ signatures, behavior, and examples.
+        Search Microsoft Win32 documentation for a single Windows API symbol or exact API topic.
 
-        Args:
-            q: A WinAPI function name or other item
+        Use this tool only when you need official Microsoft Win32 / C / C++ documentation for
+        one specific Windows API item, such as a function, struct, constant, message, interface,
+        macro, or header-defined type.
+
+        Valid input:
+        - A single API item name or exact API topic.
+        - Usually just the symbol itself, for example:
+          "CreateDirectoryW"
+          "SECURITY_ATTRIBUTES"
+          "WM_COPYDATA"
+          "CreateFile"
+          "HANDLE"
+
+        Do NOT use this tool for:
+        - General implementation questions
+        - Natural-language questions
+        - Multi-step behavior questions
+        - Rust crate paths or Rust-specific API usage
+        - Multiple items combined into one query
+        - Queries that mix symbols with prose
+
+        Never pass queries like:
+        - "How do I create a directory and set permissions?"
+        - "How do I watch a directory for changes in Rust?"
+        - "CreateDirectoryW SECURITY_ATTRIBUTES example"
+        - "difference between CreateFile and NtCreateFile"
+
+        Prefer this tool over Rust tools only when the target is Win32/Microsoft docs and the
+        needed result is about the official Windows API surface, signatures, flags, or behavior.
+
+        Input rule:
+        - Pass one symbol or one exact API topic only.
+        - Keep the query short.
+        - If the user asked a broad question, first identify the likely Win32 symbol, then search that symbol.
+
+        Returns:
+        - Search results from Microsoft Win32 docs, limited to the requested top count.
         """
         started = time.perf_counter()
         LOGGER.debug(
@@ -662,15 +697,51 @@ def build_tools(unit_tests_private: str):
             return f"ms_doc_search error: {type(e).__name__}: {e}"
 
     @tool("rust_win_search")
-    def rust_win_search(q: str, limit: int = 5) -> str:
+    def rust_win_search(item_name: str, limit: int = 10) -> str:
         """
-        Search Rust Windows API docs for windows crate paths and signatures. This is *not* a question answering tool.
+        Search Rust Windows API docs for a single Windows API item as exposed by the Rust windows crate.
 
-        Args:
-            query: A Rust item such as function, struct, const, or trait
-            limit: Maximum number of results to return
+        Use this tool only to look up one Rust Windows item by name, typically a single Win32 API
+        symbol such as a function, struct, enum, constant, or interface. This tool is for item lookup,
+        not question answering.
+
+        Valid input:
+        - One item name only, for example:
+          "CreateDirectoryW"
+          "SECURITY_ATTRIBUTES"
+          "PCWSTR"
+          "HANDLE"
+
+        If a path is available, only the final item name should be passed.
+        Example:
+        - Good: "CreateDirectoryW"
+        - Not preferred: "Windows.Win32.Storage.FileSystem.CreateDirectoryW"
+
+        Do NOT use this tool for:
+        - General Rust questions
+        - Natural-language questions
+        - Multi-part queries
+        - Combining function names with struct names
+        - Queries containing prose, punctuation-heavy requests, or implementation goals
+        - Looking up several items at once
+
+        Never pass queries like:
+        - "How do I call CreateDirectoryW from Rust?"
+        - "CreateDirectoryW SECURITY_ATTRIBUTES"
+        - "CreateDirectoryW and RemoveDirectoryW"
+        - "How do I convert a string to PCWSTR?"
+        - "best way to create a temp directory on Windows in Rust"
+
+        Input rule:
+        - Pass exactly one item name.
+        - No explanation, no sentence, no extra keywords.
+        - If the user asked a broad Rust/Windows question, first infer the most relevant item, then search only that item.
+
+        Returns:
+        - Matching Rust windows crate items and paths. This is a symbol lookup tool, not a reasoning tool.
         """
 
+        q = item_name
         if "::" in q:
             q = q.split("::")[-1]
 
@@ -744,6 +815,7 @@ def build_tools(unit_tests_private: str):
         Returns a human-readable failure summary plus the EvaluateResponse JSON.
         """
         main_rs = _normalize_rust_text(main_rs, field_name="main_rs")
+        print(main_rs)
         started = time.perf_counter()
         LOGGER.info(
             "evaluate_rust request main_rs_len=%s hidden_tests_len=%s",
@@ -757,7 +829,6 @@ def build_tools(unit_tests_private: str):
                 + unit_tests_private.strip()
                 + "\n"
             )
-            print(full_main)
             r = client.post(
                 f"{eval_base}/evaluate",
                 json={"main_rs": full_main, "dependencies": FIXED_DEPENDENCIES},
