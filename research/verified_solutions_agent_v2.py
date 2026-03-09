@@ -11,29 +11,12 @@ from typing import Any, Dict, Optional, Mapping, Sequence
 
 import httpx
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, ToolMessage, trim_messages
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 
-FIXED_DEPENDENCIES = """
-regex = "*"
-rand = "*"
-md5 = "*"
-windows = { version = "0.62.2", features = [
-    "Win32_System_Com",
-    "Win32_UI",
-    "Win32_UI_Shell",
-    "Win32_System_Ole",
-    "Win32_System_WindowsProgramming",
-    "Win32_System_SystemInformation",
-    "Win32_Storage",
-    "Win32_Storage_FileSystem",
-    "Win32_Security",
-    "Win32_System_Pipes",
-    "Win32_System_Threading",
-    "Win32_System_IO"] }
-""".strip() + "\n"
+FIXED_DEPENDENCIES = open("rust_dependencies.md", "r").read()
 
 LOGGER = logging.getLogger(__name__)
 
@@ -457,101 +440,6 @@ def format_diagnostic_summary(summary: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _extract_json_object(text: str) -> Dict[str, Any]:
-    if not isinstance(text, str):
-        raise TypeError(f"Expected string output, got {type(text).__name__}")
-
-    text = text.strip()
-    if not text:
-        raise ValueError("Empty output")
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    sanitized = _sanitize_json_text(text)
-    try:
-        return json.loads(sanitized)
-    except json.JSONDecodeError:
-        pass
-
-    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence_match:
-        fenced = fence_match.group(1)
-        try:
-            return json.loads(fenced)
-        except json.JSONDecodeError:
-            return json.loads(_sanitize_json_text(fenced))
-
-    decoder = json.JSONDecoder()
-    for candidate in (text, sanitized):
-        for idx, char in enumerate(candidate):
-            if char != "{":
-                continue
-            try:
-                obj, _ = decoder.raw_decode(candidate[idx:])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict):
-                return obj
-
-    raise ValueError("Could not extract a JSON object from model output")
-
-
-def _sanitize_json_text(text: str) -> str:
-    out = []
-    in_string = False
-    i = 0
-    while i < len(text):
-        ch = text[i]
-
-        if not in_string:
-            out.append(ch)
-            if ch == '"':
-                in_string = True
-            i += 1
-            continue
-
-        if ch == "\\":
-            if i + 1 >= len(text):
-                out.append("\\\\")
-                i += 1
-                continue
-
-            nxt = text[i + 1]
-            if nxt in {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}:
-                out.append(ch)
-                out.append(nxt)
-            else:
-                out.append("\\\\")
-                out.append(nxt)
-            i += 2
-            continue
-
-        if ch == "\n":
-            out.append("\\n")
-            i += 1
-            continue
-
-        if ch == "\r":
-            out.append("\\r")
-            i += 1
-            continue
-
-        if ch == "\t":
-            out.append("\\t")
-            i += 1
-            continue
-
-        out.append(ch)
-        if ch == '"':
-            in_string = False
-        i += 1
-
-    return "".join(out)
-
-
 def _extract_message_text(message: Any) -> str:
     content = getattr(message, "content", "")
     if isinstance(content, str):
@@ -567,24 +455,13 @@ def _extract_message_text(message: Any) -> str:
     return ""
 
 
-def _is_tool_request(obj: Dict[str, Any]) -> bool:
-    return (
-        isinstance(obj, dict)
-        and isinstance(obj.get("name"), str)
-        and isinstance(obj.get("arguments"), dict)
-    )
-
-
-def _is_final_answer(obj: Dict[str, Any]) -> bool:
-    return isinstance(obj, dict) and "main_rs" in obj and isinstance(obj["main_rs"], str)
-
-
-def build_tools(unit_tests_private: str):
+def build_tools(unit_tests_private: str, _eval_state: Optional[dict] = None):
+    eval_state = _eval_state if _eval_state is not None else {}
     msdocs_base = _env("MSDOCS_BASE_URL", "http://127.0.0.1:3000")
     rustdocs_base = _env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
     eval_base = _env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
 
-    client = httpx.Client(timeout=30.0)
+    client = httpx.Client(timeout=240.0)
 
     @tool("ms_doc_search")
     def ms_doc_search(
@@ -827,6 +704,7 @@ def build_tools(unit_tests_private: str):
                 duration_ms,
                 _summarize_tool_output("evaluate_rust", json.dumps(data, ensure_ascii=False)),
             )
+            eval_state["last"] = data
             repair_message = _build_repair_message(data)
             print(repair_message)
             return repair_message
@@ -845,7 +723,7 @@ def build_tools(unit_tests_private: str):
             raise ValueError("main_rs must be a non-empty string")
         raise FinalAnswerException(main_rs)
 
-    return [ms_doc_search, rust_win_search, format_rust, evaluate_rust, final_answer]
+    return [ms_doc_search, rust_win_search, format_rust, evaluate_rust, final_answer], eval_state
 
 
 def build_agent(tools):
@@ -888,11 +766,11 @@ Windows Crate Hints:
 - Functions that accept a `windows_core::Param<T>`` expect `Some(&T)`` as the parameter
 - Functions that accept a specific Option<T> may have Some(T) or None as the parameter
 
-The following helper may be used to create wide strings. Remember to include the std imports when using the wide_null function.
+The following helper may be used to create wide strings.
 ```
-use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
-
 fn wide_null(s: &OsStr) -> Vec<u16> {
+    // these imports are REQUIRED for the function to compile.
+    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(iter::once(0)).collect()
 }
 
@@ -910,10 +788,10 @@ fn example() {
         len(tools),
     )
 
-    agent = create_agent(
+    agent = create_react_agent(
         model=model,
         tools=tools,
-        system_prompt=system_prompt,
+        prompt=system_prompt,
     )
 
     return agent.with_config({"recursion_limit": 40}), model, context_limit
@@ -925,6 +803,7 @@ class SolveResult:
     last_eval: Dict[str, Any]
 
 
+# TODO consider an additional specialist using powerful frontier LLM
 def refactor_with_specialist(main_rs: str, problem_text: str, run_id: str) -> str:
     model = ChatOllama(
         model="hf.co/Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF:Q8_0",
@@ -974,64 +853,17 @@ def refactor_with_specialist(main_rs: str, problem_text: str, run_id: str) -> st
     return extracted
 
 
-def generate_code_with_specialist(problem_text: str, tool_context: str, run_id: str) -> str:
-    model = ChatOllama(
-        model=os.getenv(
-            "OLLAMA_CODER_MODEL",
-            "hf.co/Fortytwo-Network/Strand-Rust-Coder-14B-v1-GGUF:Q8_0",
-        ),
-        base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-        temperature=0,
-        num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "8000")),
-    )
-    prompt = (
-        "Write a complete src/main.rs solution for the problem below.\n"
-        "Use the tool research context to choose correct Win32 APIs, Rust windows crate paths, and signatures.\n"
-        "Return only a single ```rust ... ``` fence and nothing else.\n\n"
-        "Problem:\n"
-        f"{problem_text}\n\n"
-        "Tool research context:\n"
-        f"{tool_context}\n"
-    )
-    try:
-        response = model.invoke([HumanMessage(content=prompt)])
-    except Exception as exc:
-        LOGGER.warning(
-            "generate_code_with_specialist failed run_id=%s error=%s: %s",
-            run_id,
-            type(exc).__name__,
-            exc,
-        )
-        return ""
-
-    response_text = _extract_message_text(response)
-    match = re.search(r"```rust\s*(.*?)```", response_text, re.DOTALL)
-    extracted = match.group(1).strip() if match else response_text.strip()
-    if not extracted:
-        LOGGER.warning(
-            "generate_code_with_specialist extraction_failed run_id=%s response_len=%s",
-            run_id,
-            len(response_text),
-        )
-        return ""
-
-    LOGGER.info(
-        "generate_code_with_specialist run_id=%s output_len=%s",
-        run_id,
-        len(extracted),
-    )
-    return extracted
-
-
 def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int = 6) -> SolveResult:
     run_id = uuid.uuid4().hex[:8]
-    tools = build_tools(unit_tests_private)
+    eval_state: Dict[str, Any] = {}
+    tools, _ = build_tools(unit_tests_private, eval_state)
     agent, agent_model, context_limit = build_agent(tools)
     tool_map = {t.name: t for t in tools}
 
     feedback = ""
     last_eval: Dict[str, Any] = {}
     refactor_done = False
+    refactor_repair_rs: Optional[str] = None
 
     LOGGER.info(
         "solve_problem start run_id=%s problem_len=%s hidden_tests_len=%s max_attempts=%s",
@@ -1048,170 +880,50 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
             attempt,
             len(feedback),
         )
-        run_input = problem_text if not feedback else (
-            problem_text + "\n\n---\nREPAIR FEEDBACK:\n" + _truncate_feedback(feedback, 3000)
-        )
+        if refactor_repair_rs:
+            run_input = (
+                problem_text
+                + "\n\n---\nREPAIR FEEDBACK:\n"
+                + _truncate_feedback(feedback, 3000)
+                + "\n\n---\nREFACTORED CODE TO REPAIR (fix only the errors above, do not rewrite from scratch):\n```rust\n"
+                + refactor_repair_rs
+                + "\n```"
+            )
+            refactor_repair_rs = None
+        elif feedback:
+            run_input = problem_text + "\n\n---\nREPAIR FEEDBACK:\n" + _truncate_feedback(feedback, 3000)
+        else:
+            run_input = problem_text
 
         messages = [{"role": "user", "content": run_input}]
+        messages = _compress_old_tool_messages(messages, keep_last_n=1)
+        messages = _apply_context_window(messages, model=agent_model, max_tokens=context_limit)
+        eval_state.clear()
+
+        invoke_started = time.perf_counter()
         main_rs: Optional[str] = None
-        last_submitted_main_rs: Optional[str] = None
-        empty_response_count = 0
-
-        for tool_hops in range(40):
-            invoke_started = time.perf_counter()
-            messages = _compress_old_tool_messages(messages, keep_last_n=1)
-            messages = _apply_context_window(messages, model=agent_model, max_tokens=context_limit)
-            try:
-                result = agent.invoke({"messages": messages})
-            except FinalAnswerException as answer:
-                LOGGER.info(
-                    "solve_problem final_answer_exception run_id=%s attempt=%s hop=%s main_rs_len=%s",
-                    run_id,
-                    attempt,
-                    tool_hops,
-                    len(answer.main_rs),
-                )
-                main_rs = answer.main_rs
-                break
-            duration_ms = int((time.perf_counter() - invoke_started) * 1000)
-
-            msgs = result.get("messages") or []
-            print(msgs)
-            last = msgs[-1] if msgs else None
-            content = _extract_message_text(last)
-            LOGGER.debug(
-                "agent_invoke ok run_id=%s attempt=%s hop=%s duration_ms=%s message_count=%s response_preview=%r",
+        try:
+            result = agent.invoke({"messages": messages})
+        except FinalAnswerException as answer:
+            LOGGER.info(
+                "solve_problem final_answer_exception run_id=%s attempt=%s main_rs_len=%s",
                 run_id,
                 attempt,
-                tool_hops,
+                len(answer.main_rs),
+            )
+            main_rs = answer.main_rs
+        else:
+            duration_ms = int((time.perf_counter() - invoke_started) * 1000)
+            msgs = result.get("messages") or []
+            LOGGER.debug(
+                "agent_invoke completed run_id=%s attempt=%s duration_ms=%s message_count=%s",
+                run_id,
+                attempt,
                 duration_ms,
                 len(msgs),
-                _preview_text(content, limit=240),
             )
-            if not (content or "").strip() and not getattr(last, "tool_calls", None):
-                empty_response_count += 1
-                LOGGER.info(
-                    "agent_empty_response_retry run_id=%s attempt=%s hop=%s empty_response_count=%s",
-                    run_id,
-                    attempt,
-                    tool_hops,
-                    empty_response_count,
-                )
-                if empty_response_count > 3:
-                    raise RuntimeError(
-                        "Too many empty responses from agent; giving up."
-                    )
-                messages = list(msgs) + [
-                    HumanMessage(
-                        content="Continue. Call the appropriate tool or provide the final answer."
-                    )
-                ]
-                continue
-            try:
-                obj = _extract_json_object(content)
-            except Exception:
-                LOGGER.exception(
-                    "agent_output_parse_failed run_id=%s attempt=%s hop=%s response_preview=%r",
-                    run_id,
-                    attempt,
-                    tool_hops,
-                    _preview_text(content, limit=400),
-                )
-                raise
-
-            if _is_tool_request(obj):
-                tool_name = obj["name"]
-                tool_args = obj["arguments"]
-
-                if tool_name not in tool_map:
-                    raise RuntimeError(f"Model requested unknown tool: {tool_name}")
-
-                if tool_name == "evaluate_rust":
-                    submitted_main_rs = tool_args.get("main_rs")
-                    if (
-                        isinstance(submitted_main_rs, str)
-                        and last_submitted_main_rs is not None
-                        and submitted_main_rs == last_submitted_main_rs
-                    ):
-                        tool_out = (
-                            "ERROR: You submitted the same code again. The previous evaluation already failed. "
-                            "You MUST modify the code (e.g., add missing imports) before re-evaluating."
-                        )
-                        LOGGER.warning(
-                            "tool_request_duplicate_submission run_id=%s attempt=%s hop=%s tool=%s",
-                            run_id,
-                            attempt,
-                            tool_hops,
-                            tool_name,
-                        )
-                        messages = list(msgs) + [
-                            ToolMessage(
-                                content=tool_out,
-                                tool_call_id=f"manual_{tool_hops}",
-                                name=tool_name,
-                            )
-                        ]
-                        continue
-
-                LOGGER.info(
-                    "tool_request run_id=%s attempt=%s hop=%s tool=%s args=%s",
-                    run_id,
-                    attempt,
-                    tool_hops,
-                    tool_name,
-                    _preview_text(_summarize_tool_args(tool_args), limit=280),
-                )
-                tool_started = time.perf_counter()
-                try:
-                    if tool_name == "evaluate_rust" and isinstance(tool_args.get("main_rs"), str):
-                        last_submitted_main_rs = tool_args["main_rs"]
-                    tool_out = tool_map[tool_name].invoke(tool_args)
-                except FinalAnswerException as answer:
-                    LOGGER.info(
-                        "tool_final_answer_exception run_id=%s attempt=%s hop=%s tool=%s main_rs_len=%s",
-                        run_id,
-                        attempt,
-                        tool_hops,
-                        tool_name,
-                        len(answer.main_rs),
-                    )
-                    main_rs = answer.main_rs
-                    break
-                tool_duration_ms = int((time.perf_counter() - tool_started) * 1000)
-
-                LOGGER.info(
-                    "tool_result run_id=%s attempt=%s hop=%s tool=%s duration_ms=%s summary=%s",
-                    run_id,
-                    attempt,
-                    tool_hops,
-                    tool_name,
-                    tool_duration_ms,
-                    _summarize_tool_output(tool_name, tool_out),
-                )
-
-                messages = list(msgs) + [
-                    ToolMessage(
-                        content=tool_out,
-                        tool_call_id=f"manual_{tool_hops}",
-                        name=tool_name,
-                    )
-                ]
-                continue
-
-            if _is_final_answer(obj):
-                LOGGER.info(
-                    "solve_problem final_answer_json run_id=%s attempt=%s hop=%s main_rs_len=%s",
-                    run_id,
-                    attempt,
-                    tool_hops,
-                    len(obj["main_rs"]),
-                )
-                main_rs = obj["main_rs"]
-                break
-
-            raise RuntimeError("Agent finished without calling final_answer.")
-        else:
-            raise RuntimeError("Too many tool hops without producing a final answer.")
+            if main_rs is None:
+                raise RuntimeError("Agent did not produce a final answer.")
 
         if main_rs is None:
             raise RuntimeError("Agent finished without calling final_answer.")
@@ -1242,17 +954,10 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                 _summarize_tool_output("format_rust", formatted),
             )
 
-        eval_json = tool_map["evaluate_rust"].invoke({"main_rs": main_rs})
-        try:
-            last_eval = _extract_json_object(eval_json)
-        except Exception:
-            LOGGER.exception(
-                "solve_problem eval_json_parse_failed run_id=%s attempt=%s raw=%r",
-                run_id,
-                attempt,
-                _preview_text(eval_json, limit=400),
-            )
-            last_eval = {"ok": False, "raw": eval_json}
+        last_eval = eval_state.get("last", {})
+        if not last_eval:
+            tool_map["evaluate_rust"].invoke({"main_rs": main_rs})
+            last_eval = eval_state.get("last", {})
 
         if last_eval.get("ok") is True:
             LOGGER.info(
@@ -1264,8 +969,19 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
             if not refactor_done:
                 main_rs = refactor_with_specialist(main_rs, problem_text, run_id)
                 refactor_done = True
-                feedback = "Refactored for code quality. Re-verify correctness."
+                eval_state.clear()
+                tool_map["evaluate_rust"].invoke({"main_rs": main_rs})
+                last_eval = eval_state.get("last", {})
+                if last_eval.get("ok") is True:
+                    refactor_repair_rs = None
+                    return SolveResult(
+                        main_rs=main_rs.rstrip() + "\n",
+                        last_eval=last_eval,
+                    )
+                feedback = _build_repair_message(last_eval)
+                refactor_repair_rs = main_rs
                 continue
+            refactor_repair_rs = None
             return SolveResult(
                 main_rs=main_rs.rstrip() + "\n",
                 last_eval=last_eval,
@@ -1294,12 +1010,12 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
 if __name__ == "__main__":
     configure_logging()
     problem_text = open(
-        "dataset/simple-winapi/problems/0a5d7328-0ec4-4088-83d2-7e1c0e8b27c7.md",
+        "dataset/simple-winapi/problems/1ca1a7da-8410-41b0-8a87-b6f798f5232f.md",
         "r",
         encoding="utf-8",
     ).read()
     unit_tests_text = open(
-        "dataset/simple-winapi/tests/0a5d7328-0ec4-4088-83d2-7e1c0e8b27c7.rs",
+        "dataset/simple-winapi/tests/1ca1a7da-8410-41b0-8a87-b6f798f5232f.rs",
         "r",
         encoding="utf-8",
     ).read()
