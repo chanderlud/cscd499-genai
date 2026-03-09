@@ -7,12 +7,20 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any, Dict, Optional, Sequence, Mapping
 import httpx
+import time
 
 from langchain_core.messages import HumanMessage, ToolMessage, trim_messages
 from langchain_ollama import ChatOllama
+from langchain_core.tools import tool
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+class FinalAnswerException(Exception):
+    def __init__(self, main_rs: str):
+        super().__init__("final_answer")
+        self.main_rs = main_rs
 
 
 def configure_logging(level: Optional[str] = None) -> None:
@@ -575,3 +583,349 @@ def code_help_tool(prompt: str, run_id: str) -> str:
             e,
         )
         return ""
+
+def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: Optional[dict] = None):
+    eval_state = _eval_state if _eval_state is not None else {}
+    msdocs_base = env("MSDOCS_BASE_URL", "http://127.0.0.1:3000")
+    rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
+    eval_base = env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
+
+    client = httpx.Client(timeout=60.0)
+    try:
+        warmup_resp = client.get(f"{eval_base}/warmup", timeout=600)
+        warmup_resp.raise_for_status()
+        LOGGER.info(
+            "eval warmup ok response=%s",
+            preview_text(warmup_resp.json(), limit=160),
+        )
+    except Exception as exc:
+        LOGGER.warning("eval warmup failed error=%s", exc)
+
+    @tool("ms_doc_search")
+    def ms_doc_search(
+            q: str,
+            scope: str = "win32",
+            enrich: bool = True,
+            top: int = 3,
+            locale: str = "en-us",
+            skip: int = 0,
+            max_enrich: int = 8,
+    ) -> str:
+        """
+        Search Microsoft Win32 documentation for a single Windows API symbol or exact API topic.
+
+        Use this tool only when you need official Microsoft Win32 / C / C++ documentation for
+        one specific Windows API item, such as a function, struct, constant, message, interface,
+        macro, or header-defined type.
+
+        Valid input:
+        - A single API item name or exact API topic.
+        - Usually just the symbol itself, for example:
+          "CreateDirectoryW"
+          "SECURITY_ATTRIBUTES"
+          "WM_COPYDATA"
+          "CreateFile"
+          "HANDLE"
+
+        Do NOT use this tool for:
+        - General implementation questions
+        - Natural-language questions
+        - Multi-step behavior questions
+        - Rust crate paths or Rust-specific API usage
+        - Multiple items combined into one query
+        - Queries that mix symbols with prose
+
+        Never pass queries like:
+        - "How do I create a directory and set permissions?"
+        - "How do I watch a directory for changes in Rust?"
+        - "CreateDirectoryW SECURITY_ATTRIBUTES example"
+        - "difference between CreateFile and NtCreateFile"
+
+        Prefer this tool over Rust tools only when the target is Win32/Microsoft docs and the
+        needed result is about the official Windows API surface, signatures, flags, or behavior.
+
+        Input rule:
+        - Pass one symbol or one exact API topic only.
+        - Keep the query short.
+        - If the user asked a broad question, first identify the likely Win32 symbol, then search that symbol.
+
+        Returns:
+        - Search results from Microsoft Win32 docs, limited to the requested top count.
+        """
+        started = time.perf_counter()
+        LOGGER.debug(
+            "ms_doc_search request q=%r scope=%s top=%s enrich=%s locale=%s skip=%s max_enrich=%s",
+            preview_text(q, limit=120),
+            scope,
+            top,
+            enrich,
+            locale,
+            skip,
+            max_enrich,
+        )
+        try:
+            r = client.get(
+                f"{msdocs_base}/v1/search",
+                params={
+                    "q": q,
+                    "scope": scope,
+                    "enrich": str(enrich).lower(),
+                    "top": top,
+                    "locale": locale,
+                    "skip": skip,
+                    "max_enrich": max_enrich,
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
+                data["results"] = data["results"][:top]
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.info(
+                "ms_doc_search ok duration_ms=%s results=%s q=%r",
+                duration_ms,
+                len(data.get("results", [])) if isinstance(data, dict) else "n/a",
+                preview_text(q, limit=80),
+            )
+            return json.dumps(data, ensure_ascii=False, indent=2)[:18000]
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.exception(
+                "ms_doc_search failed duration_ms=%s q=%r",
+                duration_ms,
+                preview_text(q, limit=80),
+            )
+            return f"ms_doc_search error: {type(e).__name__}: {e}"
+
+    @tool("rust_win_search")
+    def rust_win_search(item_name: str, limit: int = 10) -> str:
+        """
+        Search Rust Windows API docs for a single Windows API item as exposed by the Rust windows crate.
+
+        Use this tool only to look up one Rust Windows item by name, typically a single Win32 API
+        symbol such as a function, struct, enum, constant, or interface. This tool is for item lookup,
+        not question answering.
+
+        Valid input:
+        - One item name only, for example:
+          "CreateDirectoryW"
+          "SECURITY_ATTRIBUTES"
+          "PCWSTR"
+          "HANDLE"
+
+        If a path is available, only the final item name should be passed.
+        Example:
+        - Good: "CreateDirectoryW"
+        - Not preferred: "Windows.Win32.Storage.FileSystem.CreateDirectoryW"
+
+        Do NOT use this tool for:
+        - General Rust questions
+        - Natural-language questions
+        - Multi-part queries
+        - Combining function names with struct names
+        - Queries containing prose, punctuation-heavy requests, or implementation goals
+        - Looking up several items at once
+
+        Never pass queries like:
+        - "How do I call CreateDirectoryW from Rust?"
+        - "CreateDirectoryW SECURITY_ATTRIBUTES"
+        - "CreateDirectoryW and RemoveDirectoryW"
+        - "How do I convert a string to PCWSTR?"
+        - "best way to create a temp directory on Windows in Rust"
+
+        Input rule:
+        - Pass exactly one item name.
+        - No explanation, no sentence, no extra keywords.
+        - If the user asked a broad Rust/Windows question, first infer the most relevant item, then search only that item.
+
+        Returns:
+        - Matching Rust windows crate items and paths. This is a symbol lookup tool, not a reasoning tool.
+        """
+
+        q = item_name
+        if "::" in q:
+            q = q.split("::")[-1]
+
+        started = time.perf_counter()
+        LOGGER.debug(
+            "rust_win_search request q=%r limit=%s",
+            preview_text(q, limit=120),
+            limit,
+        )
+        try:
+            r = client.get(
+                f"{rustdocs_base}/search",
+                params={"q": q, "limit": limit},
+            )
+            r.raise_for_status()
+            data = r.json()
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.info(
+                "rust_win_search ok duration_ms=%s results=%s q=%r",
+                duration_ms,
+                len(data) if isinstance(data, list) else len(data.get("results", [])) if isinstance(data,
+                                                                                                    dict) else "n/a",
+                preview_text(q, limit=80),
+            )
+            return json.dumps(data, ensure_ascii=False, indent=2)[:18000]
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.exception(
+                "rust_win_search failed duration_ms=%s q=%r",
+                duration_ms,
+                preview_text(q, limit=80),
+            )
+            return f"rust_win_search error: {type(e).__name__}: {e}"
+
+    @tool("format_rust")
+    def format_rust(snippet: str) -> str:
+        """
+        Format Rust snippet using the formatting API. Returns formatted code (or error text).
+        """
+        snippet = normalize_rust_text(snippet, field_name="snippet")
+        started = time.perf_counter()
+        LOGGER.debug("format_rust request snippet_len=%s", len(snippet))
+        try:
+            r = client.post(f"{eval_base}/format", json={"snippet": snippet})
+            r.raise_for_status()
+            data = r.json()
+            if data.get("ok") and data.get("formatted"):
+                formatted = normalize_rust_text(data["formatted"], field_name="formatted")
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                LOGGER.info(
+                    "format_rust ok duration_ms=%s formatted_len=%s",
+                    duration_ms,
+                    len(formatted),
+                )
+                return formatted
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.warning(
+                "format_rust failed duration_ms=%s response=%s",
+                duration_ms,
+                preview_text(data, limit=200),
+            )
+            return f"format_rust failed: {json.dumps(data, ensure_ascii=False)[:12000]}"
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.exception("format_rust error duration_ms=%s snippet_len=%s", duration_ms, len(snippet))
+            return f"format_rust error: {type(e).__name__}: {e}"
+
+    @tool("evaluate_rust")
+    def evaluate_rust(main_rs: str) -> str:
+        """
+        Build + clippy + run hidden tests. The harness appends hidden tests privately.
+        Returns a human-readable failure summary plus the EvaluateResponse JSON.
+        """
+        main_rs = normalize_rust_text(main_rs, field_name="main_rs")
+        print(main_rs)
+        started = time.perf_counter()
+        LOGGER.info(
+            "evaluate_rust request main_rs_len=%s hidden_tests_len=%s",
+            len(main_rs),
+            len(unit_tests_private),
+        )
+        try:
+            full_main = (
+                    ensure_empty_main(main_rs).rstrip()
+                    + "\n\n"
+                    + unit_tests_private.strip()
+                    + "\n"
+            )
+            r = client.post(
+                f"{eval_base}/evaluate",
+                json={"main_rs": full_main, "dependencies": fixed_dependencies},
+            )
+            r.raise_for_status()
+            data = r.json()
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.info(
+                "evaluate_rust ok duration_ms=%s summary=%s",
+                duration_ms,
+                summarize_tool_output("evaluate_rust", json.dumps(data, ensure_ascii=False)),
+            )
+            eval_state["last"] = data
+            repair_message = build_repair_message(data, full_main)
+            print(repair_message)
+            return repair_message
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.exception("evaluate_rust error duration_ms=%s main_rs_len=%s", duration_ms, len(main_rs))
+            return f"evaluate_rust error: {type(e).__name__}: {e}"
+
+    @tool("code_review")
+    def code_review(main_rs: str, problem_text: str) -> str:
+        """
+        Request an expert code review from an external model before calling final_answer.
+        Use this after evaluate_rust returns ok=true to catch logic errors, unsafe issues,
+        and Clippy violations that the build harness may not surface.
+        Pass the full src/main.rs content and the original problem statement.
+        Returns structured review feedback with a VERDICT, ISSUES, and SUGGESTED_FIXES.
+        """
+        main_rs = normalize_rust_text(main_rs, field_name="main_rs")
+        run_id = uuid.uuid4().hex[:8]
+
+        prompt = (
+            "You are an expert Rust code reviewer specializing in Windows API programming using the `windows` crate.\n\n"
+            "## Task\n"
+            "Review the Rust code below for correctness, safety, and idiomatic style. The code is a solution to the problem "
+            "described in the \"Problem\" section. Hidden unit tests will be appended and run against this code.\n\n"
+            "## Review Criteria (address each in order)\n"
+            "1. **Correctness** — Does the logic correctly solve the stated problem? Are Win32 API calls used with the right "
+            "arguments, flags, and error-checking patterns?\n"
+            "2. **Safety** — Is `unsafe` minimized and justified? Are raw pointers, handles, and lifetimes managed correctly? "
+            "Are resources (HANDLEs, allocations) properly released?\n"
+            "3. **Error handling** — Are all fallible Win32 calls checked? Is `windows::core::Result` / `HRESULT` propagated correctly?\n"
+            "4. **Idiomatic Rust** — Does the code follow Rust conventions (ownership, borrowing, naming)? Are there unnecessary "
+            "clones, unwraps, or panics?\n"
+            "5. **Clippy compliance** — Would `cargo clippy` flag anything? List specific lints if so.\n"
+            "6. **Import completeness** — Are all `use` paths present and correct for the `windows` crate features used?\n\n"
+            "## Output Format\n"
+            "Respond with a structured review using these exact headings:\n"
+            "### VERDICT\n"
+            "One of: APPROVE | NEEDS_CHANGES | REJECT\n"
+            "(APPROVE = ready to submit; NEEDS_CHANGES = fixable issues found; REJECT = fundamental logic error)\n\n"
+            "### ISSUES\n"
+            "A numbered list of concrete issues. For each issue state: severity (CRITICAL/MAJOR/MINOR), location (line or construct), "
+            "and a specific fix recommendation. If none, write \"None.\"\n\n"
+            "### SUGGESTED_FIXES\n"
+            "For each CRITICAL or MAJOR issue, describe the exact change needed in plain English. Do NOT rewrite the entire file.\n\n"
+            "### SUMMARY\n"
+            "One paragraph summarizing overall quality and the most important action to take next.\n\n"
+            "## Problem\n"
+            f"{problem_text}\n\n"
+            "## Code Under Review\n"
+            "```rust\n"
+            f"{main_rs}\n"
+            "```\n"
+        )
+
+        review = code_help_tool(prompt, run_id)
+        if not review:
+            return "code_review unavailable (OPENROUTER_API_KEY not set or request failed). Proceed with caution or call final_answer."
+        LOGGER.info("code_review run_id=%s review_len=%s", run_id, len(review))
+        return review
+
+    @tool("code_help")
+    def code_help(main_rs: str, context: str, question: str) -> str:
+        """
+        Request help from an outside expert. Provide the current code
+        and a question. For example, ask how to implement a pattern,
+        how to fix an error, how to use a certain API, etc. The context
+        can include build errors or other information the outside expert
+        will need to help answer the question.
+        """
+        answer = code_help_helper(main_rs, context, question)
+        return answer
+
+    @tool("final_answer")
+    def final_answer(main_rs: str) -> str:
+        """
+        Submit the final src/main.rs content when it is formatted and ready.
+        """
+        main_rs = normalize_rust_text(main_rs, field_name="main_rs")
+        if not isinstance(main_rs, str) or not main_rs.strip():
+            raise ValueError("main_rs must be a non-empty string")
+        raise FinalAnswerException(main_rs)
+
+    # TODO re-enable microsoft doc search
+    return [rust_win_search, format_rust, evaluate_rust, code_review, code_help, final_answer], eval_state
