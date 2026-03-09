@@ -14,12 +14,14 @@ use rustdoc_search::src_signature_extractor::{
 /// Source roots relative to the project root (current dir when run from rustdoc-search).
 const CORE_SRC: &str = "data/core/src";
 const STRINGS_SRC: &str = "data/strings/src";
+const RESULT_SRC: &str = "data/result/src";
 const OUTPUT_PATH: &str = "data/windows-core-items.json";
 
 fn main() -> Result<()> {
     let project_root = std::env::current_dir().context("Failed to get current directory")?;
     let core_root = project_root.join(CORE_SRC);
     let strings_root = project_root.join(STRINGS_SRC);
+    let result_root = project_root.join(RESULT_SRC);
 
     let mut items = Vec::new();
     let mut core_count = 0u32;
@@ -35,6 +37,13 @@ fn main() -> Result<()> {
     if strings_root.is_dir() {
         let public_modules = public_reexport_modules(&strings_root.join("lib.rs"))?;
         for item in walk_and_parse(&strings_root, &public_modules, "str", &mut str_count)? {
+            items.push(item);
+        }
+    }
+
+    if result_root.is_dir() {
+        let public_modules = public_reexport_modules(&result_root.join("lib.rs"))?;
+        for item in walk_and_parse(&result_root, &public_modules, "str", &mut str_count)? {
             items.push(item);
         }
     }
