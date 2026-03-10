@@ -1,0 +1,5 @@
+{"id": "afa14069", "idea": "Enumerate clipboard formats with EnumClipboardFormats", "ok": true}
+{"id": null, "idea": "Monitor clipboard changes with SetClipboardViewer", "ok": false, "error": "attempted relative import with no known parent package"}
+{"id": null, "idea": "Implement drag-and-drop using RegisterDragDrop", "ok": false, "error": "attempted relative import with no known parent package"}
+{"id": null, "idea": "Create custom clipboard formats with RegisterClipboardFormat", "ok": false, "error": "attempted relative import with no known parent package"}
+{"id": null, "idea": "Use Rich Text Format (CF_RTF) for clipboard", "ok": false, "error": "attempted relative import with no known parent package"}

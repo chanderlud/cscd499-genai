@@ -105,4 +105,5 @@ windows = { version = "0.62.2", features = [
 "Win32_NetworkManagement",
 "Win32_NetworkManagement_IpHelper",
 "Win32_NetworkManagement_Ndis",
+"Win32_System_ProcessStatus",
 "Win32_Storage_Packaging_Appx" ]}

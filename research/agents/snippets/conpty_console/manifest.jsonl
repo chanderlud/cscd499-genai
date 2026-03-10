@@ -1,0 +1,5 @@
+{"id": "adc70d58", "idea": "Get and set console input modes", "ok": true}
+{"id": "95970ff2", "idea": "Retrieve standard handles (stdin/stdout/stderr)", "ok": true}
+{"id": null, "idea": "Implement raw terminal mode", "ok": false, "error": "Agent did not produce a final answer."}
+{"id": "dcb5fd24", "idea": "Check stdin for available input", "ok": true}
+{"id": "30c62f1b", "idea": "Restore original console modes", "ok": true}

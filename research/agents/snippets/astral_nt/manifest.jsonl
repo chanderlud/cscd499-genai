@@ -1,0 +1,4 @@
+{"id": "1ba096ef", "idea": "Enumerate running processes with Process32First/Next", "ok": true}
+{"id": "aff4d304", "idea": "Query file attributes using GetFileAttributesExW", "ok": true}
+{"id": "c15b035f", "idea": "Read registry value with RegOpenKeyExW/RegQueryValueExW", "ok": true}
+{"id": "533e23b4", "idea": "Check service status via OpenServiceW/QueryServiceStatus", "ok": true}
