@@ -1,3 +1,23 @@
+
+
+def extract_rust_from_messages(messages):
+    """Return the most recent fenced Rust code block from AI messages."""
+    import re
+
+    rust_block = re.compile(r"```(?:rust)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+    for msg in reversed(messages or []):
+        is_ai = getattr(msg, "type", None) == "ai" or msg.__class__.__name__ == "AIMessage"
+        if not is_ai:
+            continue
+        text = extract_message_text(msg)
+        if not text:
+            continue
+        matches = list(rust_block.finditer(text))
+        if matches:
+            code = matches[-1].group(1).strip()
+            if code:
+                return code
+    return None
 import json
 import logging
 import os
@@ -344,7 +364,9 @@ def extract_message_text(message: Any) -> str:
     return ""
 
 
-def build_repair_message(eval_result: Dict[str, Any], main_rs: str) -> str:
+def build_repair_message(
+    eval_result: Dict[str, Any], main_rs: str, problem_text: str = ""
+) -> str:
     build = eval_result.get("build") if isinstance(eval_result.get("build"), dict) else {}
     clippy = eval_result.get("clippy") if isinstance(eval_result.get("clippy"), dict) else {}
     tests = eval_result.get("tests") if isinstance(eval_result.get("tests"), dict) else {}
@@ -373,10 +395,18 @@ def build_repair_message(eval_result: Dict[str, Any], main_rs: str) -> str:
 
     repair = "\n".join(parts)
 
+    if not passed and repair and ("unresolved import" in repair.lower() or "cannot find" in repair.lower()):
+        repair += "\n\n**Import error detected:** Call `rust_win_search(\"<symbol>\")` for each unresolved symbol to find its correct `windows` crate path before retrying."
+
     if passed:
         return repair
     else:
-        answer = code_help_helper(main_rs, repair, "Explain how to fix the repair messages for the code.")
+        answer = code_help_helper(
+            main_rs,
+            repair,
+            "Explain how to fix the repair messages for the code.",
+            problem_text=problem_text,
+        )
         return repair + "\n\n Expert repair suggestion: " + answer
 
 
@@ -510,16 +540,30 @@ def refactor_with_specialist(main_rs: str, problem_text: str, run_id: str) -> st
     return extracted
 
 
-def code_help_helper(main_rs: str, context: str, question: str):
+def code_help_helper(
+    main_rs: str,
+    context: str,
+    question: str,
+    problem_text: str = "",
+    doc_results: str = "",
+):
     main_rs = normalize_rust_text(main_rs, field_name="main_rs")
     run_id = uuid.uuid4().hex[:8]
+
+    sections = []
+    if problem_text:
+        sections.append("## Original Problem\n" f"{problem_text}\n\n")
+    if doc_results:
+        sections.append("## Documentation Tool Output\n" f"{doc_results}\n\n")
+    optional_prefix = "".join(sections)
 
     prompt = (
         "You are an expert Rust coder specializing in Windows API programming using the `windows` crate.\n\n"
         "## Task\n"
         "Review the provided code, referring to the context as needed. Answer the question in a consist manner "
         "while including useful information for the user. Do not implement tests, large blocks of code, "
-        "or suggest logging as a solution."
+        "or suggest logging as a solution.\n\n"
+        f"{optional_prefix}"
         "## Context\n"
         f"{context}\n\n"
         "## Question\n"
@@ -584,7 +628,7 @@ def code_help_tool(prompt: str, run_id: str) -> str:
         )
         return ""
 
-def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: Optional[dict] = None):
+def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: Optional[dict] = None, run_tests: bool = True):
     eval_state = _eval_state if _eval_state is not None else {}
     msdocs_base = env("MSDOCS_BASE_URL", "http://127.0.0.1:3000")
     rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
@@ -833,7 +877,7 @@ def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: O
             )
             r = client.post(
                 f"{eval_base}/evaluate",
-                json={"main_rs": full_main, "dependencies": fixed_dependencies},
+                json={"main_rs": full_main, "dependencies": fixed_dependencies, "run_tests": run_tests},
             )
             r.raise_for_status()
             data = r.json()
@@ -906,15 +950,28 @@ def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: O
         return review
 
     @tool("code_help")
-    def code_help(main_rs: str, context: str, question: str) -> str:
+    def code_help(
+        main_rs: str,
+        context: str,
+        question: str,
+        problem_text: str = "",
+        doc_results: str = "",
+    ) -> str:
         """
         Request help from an outside expert. Provide the current code
         and a question. For example, ask how to implement a pattern,
         how to fix an error, how to use a certain API, etc. The context
         can include build errors or other information the outside expert
         will need to help answer the question.
+
+        Always pass problem_text: the original problem statement (copy it
+        verbatim from the user message). Always pass doc_results: paste
+        the raw JSON/text output from any ms_doc_search or rust_win_search
+        calls already made for the current problem, concatenated together.
         """
-        answer = code_help_helper(main_rs, context, question)
+        answer = code_help_helper(
+            main_rs, context, question, problem_text=problem_text, doc_results=doc_results
+        )
         return answer
 
     @tool("final_answer")

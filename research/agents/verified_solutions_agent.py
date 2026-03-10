@@ -29,6 +29,7 @@ def build_agent(tools):
 Hard rules:
 - Use ms_doc_search and rust_win_search to confirm any Win32 API signature/behavior and the correct Rust windows crate path/features.
 - Use the code_help tool when you need help solving a problem in your code.
+- When calling code_help, always pass problem_text (the original problem statement) and doc_results (concatenated output from any ms_doc_search / rust_win_search calls already made for this problem).
 - Write stable Rust that compiles as src/main.rs. Do NOT include tests. The judge will append hidden tests after your code.
 - You may call evaluate_rust to run build/clippy/tests. Keep iterating until it reports ok=true.
 - When evaluate_rust returns, read the build diagnostics carefully. If errors say unresolved import or use of undeclared type, add the missing use statements at the top of the file and call evaluate_rust again with corrected code.
@@ -158,7 +159,20 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                 len(msgs),
             )
             if main_rs is None:
-                raise RuntimeError("Agent did not produce a final answer.")
+                salvaged_main_rs = extract_rust_from_messages(msgs)
+                if salvaged_main_rs:
+                    main_rs = salvaged_main_rs
+                    LOGGER.warning(
+                        "solve_problem salvaged_from_messages attempt=%s",
+                        attempt + 1,
+                    )
+                elif eval_state.get("last", {}):
+                    feedback = build_repair_message(
+                        eval_state["last"], "", problem_text=problem_text
+                    )
+                    continue
+                else:
+                    raise RuntimeError("Agent did not produce a final answer.")
 
         if main_rs is None:
             raise RuntimeError("Agent finished without calling final_answer.")
@@ -213,7 +227,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                         main_rs=main_rs.rstrip() + "\n",
                         last_eval=last_eval,
                     )
-                feedback = build_repair_message(last_eval, main_rs)
+                feedback = build_repair_message(last_eval, main_rs, problem_text=problem_text)
                 refactor_repair_rs = main_rs
                 continue
             return SolveResult(
@@ -221,7 +235,7 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
                 last_eval=last_eval,
             )
 
-        feedback = build_repair_message(last_eval, main_rs)
+        feedback = build_repair_message(last_eval, main_rs, problem_text=problem_text)
         LOGGER.warning(
             "solve_problem attempt_failed run_id=%s attempt=%s feedback=%r",
             run_id,

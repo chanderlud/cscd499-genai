@@ -85,6 +85,9 @@ struct EvaluateRequest {
     main_rs: String,
     /// Lines that would live INSIDE the [dependencies] section (no header).
     dependencies: String,
+    /// When Some(false), skip the test step; None or Some(true) = run tests.
+    #[serde(default)]
+    run_tests: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -272,7 +275,16 @@ async fn evaluate(
         )
         .await?;
 
-        tests = run_cargo_test_step(temp.path(), state.limits.test_timeout, &state.limits).await?;
+        if req.run_tests != Some(false) {
+            tests = run_cargo_test_step(temp.path(), state.limits.test_timeout, &state.limits).await?;
+        } else {
+            tests = StepReport {
+                name: "tests".to_string(),
+                ran: false,
+                ok: true,
+                ..Default::default()
+            };
+        }
     } else {
         clippy.ran = false;
         tests.ran = false;
