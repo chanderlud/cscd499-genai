@@ -1,0 +1,69 @@
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_com_marshal_stream_roundtrip_empty() -> Result<()> {
+        let result = com_marshal_stream_roundtrip(&[])?;
+        assert!(result.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_small_data() -> Result<()> {
+        let input = b"hello";
+        let result = com_marshal_stream_roundtrip(input)?;
+        assert_eq!(&result, input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_medium_data() -> Result<()> {
+        let input = b"the quick brown fox jumps over the lazy dog";
+        let result = com_marshal_stream_roundtrip(input)?;
+        assert_eq!(&result, input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_large_data() -> Result<()> {
+        let input = vec![42u8; 10_000];
+        let result = com_marshal_stream_roundtrip(&input)?;
+        assert_eq!(&result, &input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_non_ascii() -> Result<()> {
+        let input = "こんにちは世界".as_bytes();
+        let result = com_marshal_stream_roundtrip(input)?;
+        assert_eq!(&result, input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_binary_data() -> Result<()> {
+        let input = vec![0u8, 255, 128, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let result = com_marshal_stream_roundtrip(&input)?;
+        assert_eq!(&result, &input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_single_byte() -> Result<()> {
+        let input = b"A";
+        let result = com_marshal_stream_roundtrip(input)?;
+        assert_eq!(&result, input);
+        Ok(())
+    }
+
+    #[test]
+    fn test_com_marshal_stream_roundtrip_two_bytes() -> Result<()> {
+        let input = b"Hi";
+        let result = com_marshal_stream_roundtrip(input)?;
+        assert_eq!(&result, input);
+        Ok(())
+    }
+}
+

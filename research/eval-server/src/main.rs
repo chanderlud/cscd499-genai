@@ -88,6 +88,9 @@ struct EvaluateRequest {
     /// When Some(false), skip the test step; None or Some(true) = run tests.
     #[serde(default)]
     run_tests: Option<bool>,
+    /// When Some(true), compile tests with `cargo test --no-run` during the build step.
+    #[serde(default)]
+    compile_tests: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -247,10 +250,15 @@ async fn evaluate(
     let temp = copy_template(&state.template_dir)?;
     write_main_rs(temp.path(), &req.main_rs)?;
 
+    let build_args: &[&str] = if req.compile_tests == Some(true) {
+        &["test", "--no-run", "--message-format=json"]
+    } else {
+        &["build", "--message-format=json"]
+    };
     let build = run_cargo_json_step(
         "build",
         temp.path(),
-        &["build", "--message-format=json"],
+        build_args,
         state.limits.build_timeout,
         &state.limits,
     )

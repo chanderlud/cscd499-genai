@@ -36,6 +36,14 @@ from langchain_core.tools import tool
 
 LOGGER = logging.getLogger(__name__)
 
+IGNORABLE_UNUSED_CODES = frozenset({
+    "unused_imports",
+    "unused_variables",
+    "dead_code",
+    "unused_mut",
+    "unused_assignments",
+})
+
 
 class FinalAnswerException(Exception):
     def __init__(self, main_rs: str):
@@ -364,6 +372,43 @@ def extract_message_text(message: Any) -> str:
     return ""
 
 
+def is_only_unused_warnings(eval_result: Dict[str, Any]) -> bool:
+    build = eval_result.get("build") if isinstance(eval_result.get("build"), dict) else {}
+    if not build.get("ok"):
+        return False
+
+    clippy = eval_result.get("clippy") if isinstance(eval_result.get("clippy"), dict) else {}
+
+    build_diag = build.get("diagnostics") or {}
+    clippy_diag = clippy.get("diagnostics") or {}
+
+    if build_diag.get("errors", 0) > 0 or clippy_diag.get("errors", 0) > 0:
+        return False
+
+    combined_codes = set()
+    for diag in (build_diag, clippy_diag):
+        by_code = diag.get("by_code") or {}
+        if isinstance(by_code, Mapping):
+            combined_codes.update(by_code.keys())
+
+    print(f"combined codes: {combined_codes}")
+
+    if not combined_codes:
+        return True
+
+    if not combined_codes.issubset(IGNORABLE_UNUSED_CODES):
+        return False
+
+    for diag in (build_diag, clippy_diag):
+        items = diag.get("items") or []
+        if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+            for item in items:
+                if isinstance(item, Mapping) and item.get("level") == "error":
+                    return False
+
+    return True
+
+
 def build_repair_message(
     eval_result: Dict[str, Any], main_rs: str, problem_text: str = ""
 ) -> str:
@@ -386,6 +431,9 @@ def build_repair_message(
     elif not tests.get("ok") or False and test_summary:
         parts.append("TESTS FAILED. The unit tests that failed are: " + ", ".join(test_summary.get(
             "failed_names")) + ". Edit the code to pass the tests. Refer to the original problem for the exact requirements.")
+    elif is_only_unused_warnings(eval_result):
+        parts.append("Code is good to go. Only unused import/variable warnings remain, which are acceptable.")
+        passed = True
     elif clippy_diagnostics and clippy_diagnostics.get("items") or 0 > 0:
         parts.append(
             "\n[clippy diagnostics]\n" + format_diagnostic_summary(clippy_diagnostics) + "\n Resolve clippy lints.")
@@ -397,6 +445,28 @@ def build_repair_message(
 
     if not passed and repair and ("unresolved import" in repair.lower() or "cannot find" in repair.lower()):
         repair += "\n\n**Import error detected:** Call `rust_win_search(\"<symbol>\")` for each unresolved symbol to find its correct `windows` crate path before retrying."
+
+    windows_unused_import_detected = False
+    for diagnostics in (build_diagnostics, clippy_diagnostics):
+        items = diagnostics.get("items") or []
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            code = str(item.get("code") or "")
+            if code not in {"unused_imports", "E0unused", "dead_code"}:
+                continue
+            message = str(item.get("message") or "")
+            rendered = str(item.get("rendered") or "")
+            if "windows::" in message or "windows::" in rendered:
+                windows_unused_import_detected = True
+                break
+        if windows_unused_import_detected:
+            break
+
+    if windows_unused_import_detected:
+        repair += "\n\nUnused Windows API imports detected. Remove all `use windows::...` lines that are not referenced in a test assertion. Do not call `rust_win_search` to fix unused imports - simply delete them."
 
     if passed:
         return repair

@@ -20,6 +20,11 @@ from helpers import *
 FIXED_DEPENDENCIES = open("../rust_dependencies.md", "r").read()
 _HTTPX_READY = httpx is not None
 
+RUST_FENCE_RE = re.compile(
+    r"```(?:rust|rs)\s*(?P<code>[\s\S]*?)\s*```",
+    re.IGNORECASE,
+)
+
 
 def _tfidf_similarity(a: str, b: str) -> float:
     """Tokenise both strings (lowercase, split on non-alphanumeric), build term-frequency vectors, return cosine similarity."""
@@ -199,6 +204,52 @@ Be specific and brief. No code blocks."""
     return guidance.strip()
 
 
+def generate_initial_snippet(
+    idea: str,
+    guidance: str,
+    sample_context: str,
+    feedback: str,
+    run_id: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    prompt = f"""You are an expert Rust engineer for Windows API programming with the `windows` crate.
+
+Generate one complete standalone Rust `src/main.rs` file for this idea.
+
+Rules:
+- Output only one Rust fenced code block.
+- The file must include all required `use` imports and a complete `fn main()`.
+- Use only the `windows` crate (no `winapi`).
+- Prefer W-suffix Win32 APIs.
+- Use `windows::core::Result` as the `main` return type.
+- Minimize `unsafe` and keep each unsafe region as small as possible.
+- Do NOT include unit tests.
+- For non-Result Win32 calls, check return values and use `windows::core::Error::from_win32()` when needed.
+- Convert Win32 errors to HRESULT idiomatically (`WIN32_ERROR::to_hresult()` or `HRESULT::from_win32(...)`), never hard-code HRESULT literals.
+
+## Idea
+{idea}
+
+## Implementation Guidance
+{guidance or "(none)"}
+
+## API Symbols / Sample Context
+{sample_context or "(none)"}
+
+## Compiler/Clippy Feedback from Prior Attempt
+{feedback or "(none)"}
+"""
+    answer = code_help_tool(prompt, run_id)
+    if not answer or not answer.strip():
+        return None, "empty OpenRouter response"
+    text = answer.strip()
+    match = RUST_FENCE_RE.search(text)
+    if match:
+        return match.group("code").strip() + "\n", None
+    if "fn main" in text:
+        return text.rstrip() + "\n", None
+    return None, "could not extract Rust snippet"
+
+
 def build_snippet_agent(tools):
     model_name = os.getenv("OLLAMA_MODEL", "glm-4.7-flash:latest")
     model_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -211,23 +262,21 @@ def build_snippet_agent(tools):
     )
     context_limit = int(os.getenv("OLLAMA_CONTEXT_TOKENS", "6000"))
 
-    system_prompt = """You generate standalone, self-contained Rust code snippets that demonstrate Windows API usage via the `windows` crate.
+    system_prompt = """You improve a pre-generated standalone Rust snippet that demonstrates Windows API usage via the `windows` crate.
 
 Workflow (follow in order):
 
-**Step 1 — Discover imports (mandatory, before writing code):**
-For every Win32 symbol the snippet will use, call `rust_win_search` with that symbol name. Read the `path` field from each result. These are the only import paths you may use. Do NOT invent or guess `windows::` paths.
-
-**Step 2 — Write the snippet** using only the paths confirmed in Step 1.
-
-**Step 3 — Evaluate.** If `evaluate_rust` returns errors mentioning unresolved imports or unknown items, call `rust_win_search` for the failing symbol and fix the import. Do NOT guess a corrected path.
-
-**Step 4 — After `evaluate_rust` returns `ok=true`**, call `code_review`, then `format_rust`, then `final_answer`.
+Step 1: Read the provided current snippet and identify unresolved or uncertain Windows symbols.
+Step 2: For each unresolved/uncertain symbol, call `rust_win_search` with the bare symbol name. Use only confirmed paths.
+Step 3: Edit the snippet directly to fix imports, API usage, and logic.
+Step 4: Call `evaluate_rust`.
+Step 5: If `evaluate_rust` fails, apply your best concrete fix and iterate.
+Step 6: When `evaluate_rust` returns ok=true, call `code_review`, then `format_rust`, then `final_answer`.
 
 Hard rules:
-- Each snippet must be a complete, standalone Rust file: include all `use` imports at the top, a `fn main()` that exercises the API, and proper error handling.
-- Do NOT write unit tests. Do NOT write library functions without a main().
-- Use code_help when you need expert guidance on a specific implementation problem. When calling code_help, always pass problem_text (the original problem statement) and doc_results (concatenated output from any ms_doc_search / rust_win_search calls already made for this problem).
+- Do NOT call `code_help`. If you cannot resolve an error, call `evaluate_rust` with your best fix and iterate.
+- Each snippet must remain a complete standalone Rust file with all `use` imports and `fn main()`.
+- Do NOT write unit tests.
 - Call evaluate_rust to compile and run clippy (no test step). Iterate until ok=true with zero clippy warnings.
 - Do NOT call evaluate_rust again with identical code after a failure. Make a concrete fix first.
 - If code_review returns NEEDS_CHANGES or REJECT, fix all CRITICAL/MAJOR issues and re-evaluate.
@@ -239,7 +288,6 @@ Quality rules:
 - Minimize `unsafe` blocks; justify each with a comment.
 - Use `?` operator for Result-returning calls.
 - For non-Result Win32 calls, check the return value and call `GetLastError` / `windows::core::Error::from_win32()`.
-- Include `#[allow(unused_imports)] use windows::core::{Result, Error};` at the top.
 - The snippet must compile and pass clippy with no warnings (deny(warnings) is enforced).
 
 Wide string helper (use when needed):
@@ -301,7 +349,9 @@ Key rules derived from the above:
 
 
 def build_snippet_tools(eval_state: Dict[str, Any]) -> Tuple[list, dict]:
-    return build_tools("", FIXED_DEPENDENCIES, eval_state, run_tests=False)
+    base_tools, state = build_tools("", FIXED_DEPENDENCIES, eval_state, run_tests=False)
+    filtered_tools = [tool for tool in base_tools if tool.name != "code_help"]
+    return filtered_tools, state
 
 
 def generate_snippet(
@@ -319,41 +369,17 @@ def generate_snippet(
 
     feedback = ""
     last_eval: Dict[str, Any] = {}
+    openrouter_same_streak = 0
     refactor_done = False
-    refactor_repair_rs: Optional[str] = None
-
-    initial_prompt = f"""
-Generate a standalone Rust snippet that demonstrates: {idea}
-
-Requirements:
-- Must be a complete src/main.rs file with fn main().
-- Use only the `windows` crate (features already configured in Cargo.toml).
-- Include all necessary `use` imports.
-- Follow best practices: Result propagation, minimal unsafe, W-suffix functions.
-- The snippet must compile and pass clippy with zero warnings.
-"""
-    if sample_context.strip():
-        initial_prompt += f"""
-## API Symbols to Verify
-The following symbols were identified from the sample. **You must still call `rust_win_search` for each one** to confirm the exact `windows` crate path before using it. The LLM-generated paths below may be incorrect.
-{sample_context.strip()}
-
-"""
-    initial_prompt += f"""
-## Reference Sample (for pattern inspiration only)
-Do NOT copy verbatim. Use it only for pattern inspiration; resolve exact paths via rust_win_search (see API Symbols to Verify above).
-```rust
-{sample_code}
-```
-"""
-    if guidance.strip():
-        initial_prompt += f"""
-
-## Implementation Guidance
-{guidance.strip()}
-"""
-
-    print(initial_prompt)
+    current_main_rs, seed_error = generate_initial_snippet(
+        idea=idea,
+        guidance=guidance,
+        sample_context=sample_context,
+        feedback="",
+        run_id=f"{run_id}-seed",
+    )
+    if current_main_rs is None:
+        raise RuntimeError(f"Failed to generate initial snippet: {seed_error or 'unknown error'}")
 
     LOGGER.info(
         "generate_snippet start run_id=%s idea=%r sample_len=%s guidance_len=%s model=%s max_attempts=%s",
@@ -372,20 +398,20 @@ Do NOT copy verbatim. Use it only for pattern inspiration; resolve exact paths v
             attempt,
             len(feedback),
         )
-        if refactor_repair_rs:
-            run_input = (
-                initial_prompt
-                + "\n\n---\nREPAIR FEEDBACK:\n"
-                + truncate_feedback(feedback, 3000)
-                + "\n\n---\nREFACTORED CODE TO REPAIR (fix only the errors above, do not rewrite from scratch):\n```rust\n"
-                + refactor_repair_rs
-                + "\n```"
-            )
-            refactor_repair_rs = None
-        elif feedback:
-            run_input = initial_prompt + "\n\n---\nREPAIR FEEDBACK:\n" + truncate_feedback(feedback, 3000)
-        else:
-            run_input = initial_prompt
+        run_input = (
+            "Here is a Rust snippet to evaluate and fix.\n\n"
+            f"## Idea\n{idea}\n\n"
+            "## Current Snippet\n"
+            "```rust\n"
+            f"{current_main_rs}\n"
+            "```\n\n"
+            "## Feedback\n"
+            f"{truncate_feedback(feedback, 4000) if feedback else '(none)'}\n\n"
+            "## Reference Sample\n"
+            "```rust\n"
+            f"{sample_code}\n"
+            "```\n"
+        )
 
         messages = [{"role": "user", "content": run_input}]
         messages = compress_old_tool_messages(messages, keep_last_n=1)
@@ -424,8 +450,26 @@ Do NOT copy verbatim. Use it only for pattern inspiration; resolve exact paths v
                     )
                 elif eval_state.get("last", {}):
                     feedback = build_repair_message(
-                        eval_state["last"], "", problem_text=idea
+                        eval_state["last"], current_main_rs, problem_text=idea
                     )
+                    regenerated_main_rs, regen_error = generate_initial_snippet(
+                        idea=idea,
+                        guidance=guidance,
+                        sample_context=sample_context,
+                        feedback=feedback,
+                        run_id=f"{run_id}-attempt-{attempt}",
+                    )
+                    if regenerated_main_rs is None:
+                        raise RuntimeError(
+                            f"Failed to regenerate snippet after agent failure: {regen_error or 'unknown error'}"
+                        )
+                    if regenerated_main_rs.strip() == current_main_rs.strip():
+                        openrouter_same_streak += 1
+                        if openrouter_same_streak >= 2:
+                            raise RuntimeError("OpenRouter regeneration made no progress for 2 consecutive attempts.")
+                    else:
+                        openrouter_same_streak = 0
+                    current_main_rs = regenerated_main_rs
                     continue
                 else:
                     raise RuntimeError("Agent did not produce a final answer.")
@@ -484,7 +528,24 @@ Do NOT copy verbatim. Use it only for pattern inspiration; resolve exact paths v
                         last_eval=last_eval,
                     )
                 feedback = build_repair_message(last_eval, main_rs, problem_text=idea)
-                refactor_repair_rs = main_rs
+                regenerated_main_rs, regen_error = generate_initial_snippet(
+                    idea=idea,
+                    guidance=guidance,
+                    sample_context=sample_context,
+                    feedback=feedback,
+                    run_id=f"{run_id}-attempt-{attempt}-refactor",
+                )
+                if regenerated_main_rs is None:
+                    raise RuntimeError(
+                        f"Failed to regenerate snippet after refactor evaluation: {regen_error or 'unknown error'}"
+                    )
+                if regenerated_main_rs.strip() == current_main_rs.strip():
+                    openrouter_same_streak += 1
+                    if openrouter_same_streak >= 2:
+                        raise RuntimeError("OpenRouter regeneration made no progress for 2 consecutive attempts.")
+                else:
+                    openrouter_same_streak = 0
+                current_main_rs = regenerated_main_rs
                 continue
             return SnippetResult(
                 idea=idea,
@@ -499,6 +560,22 @@ Do NOT copy verbatim. Use it only for pattern inspiration; resolve exact paths v
             attempt,
             preview_text(feedback, limit=400),
         )
+        regenerated_main_rs, regen_error = generate_initial_snippet(
+            idea=idea,
+            guidance=guidance,
+            sample_context=sample_context,
+            feedback=feedback,
+            run_id=f"{run_id}-attempt-{attempt}",
+        )
+        if regenerated_main_rs is None:
+            raise RuntimeError(f"Failed to regenerate snippet: {regen_error or 'unknown error'}")
+        if regenerated_main_rs.strip() == current_main_rs.strip():
+            openrouter_same_streak += 1
+            if openrouter_same_streak >= 2:
+                raise RuntimeError("OpenRouter regeneration made no progress for 2 consecutive attempts.")
+        else:
+            openrouter_same_streak = 0
+        current_main_rs = regenerated_main_rs
 
     LOGGER.error(
         "generate_snippet exhausted_attempts run_id=%s max_attempts=%s last_eval=%r",

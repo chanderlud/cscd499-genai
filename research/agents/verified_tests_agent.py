@@ -46,7 +46,7 @@ def build_test_agent(tools):
     system_prompt = """You improve Rust unit tests for Win32/Windows API programming problems.
 
 Workflow (follow in order):
-- Step 1: Call rust_win_search for any Windows API types/functions referenced in tests to confirm correct windows crate import paths.
+- Step 1: First decide whether tests directly reference a Windows API type or constant in an assertion. Only if yes, call rust_win_search for those symbols to confirm correct windows crate import paths. Otherwise, do not add any use windows::... lines.
 - Step 2: Rewrite/improve the test module using the provided current test module context.
 - Step 3: Call evaluate_rust with the improved test module.
 - Step 4: Iterate on compile/test errors until evaluate_rust reports ok=true.
@@ -56,7 +56,7 @@ Hard rules:
 - Tests must be inside: #[cfg(test)] mod tests { use super::*; ... }
 - Test names must be descriptive, e.g. test_sha256_known_abc_vector.
 - Never implement the function under test. Import from super::* only.
-- Do not mock Windows API types; use the windows crate directly via rust_win_search-confirmed paths.
+- Do NOT add use windows::... imports to the test module unless a Windows API type or constant is directly referenced in a test assertion (e.g., as an argument to assert_eq! or as a literal value). Never import Windows API symbols that are only needed by the implementation under super::*.
 - Prefer deterministic assertions with known expected values.
 - Do NOT call evaluate_rust again with identical code after a failure.
 - If code_help is needed, pass problem_text and doc_results.
@@ -64,6 +64,7 @@ Hard rules:
 - Keep tests deterministic and fast; avoid random, UI interaction, and unbounded waits.
 - Tests must complete quickly (under 5 seconds total).
 - Cover error paths when implied by the spec.
+- If writing meaningful, deterministic tests for this problem requires calling Windows API functions directly inside the test body (not via super::*), output SKIP: tests require direct Windows API calls and call final_answer with that skip message instead of generating tests.
 """
 
     LOGGER.info(
@@ -111,7 +112,8 @@ def build_test_tools(
                 json={
                     "main_rs": full_main,
                     "dependencies": fixed_dependencies,
-                    "run_tests": True,
+                    "run_tests": False,
+                    "compile_tests": True,
                 },
             )
             r.raise_for_status()
@@ -123,7 +125,9 @@ def build_test_tools(
                 summarize_tool_output("evaluate_rust", json.dumps(data, ensure_ascii=False)),
             )
             eval_state["last"] = data
-            return build_repair_message(data, full_main)
+            repair_message = build_repair_message(data, full_main)
+            print(repair_message)
+            return repair_message
         except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
             LOGGER.exception(
@@ -150,8 +154,9 @@ Given the problem statement below, generate a minimal Rust stub implementation s
 
 Rules:
 - Implement the function signature(s) described by the problem.
-- The body can use unimplemented!() or a trivially minimal implementation.
-- Include necessary use imports.
+- The body must use unimplemented!().
+- Do not include any imports not required for the function signature.
+- Always include use windows::core::{{Result, Error}} even if unused.
 - Include fn main() {{}}.
 - Output only one Rust fenced code block.
 
@@ -182,9 +187,12 @@ Rules:
 - Cover happy path, edge cases (empty input, boundary values), and error cases.
 - Prefer deterministic assertions with known expected values.
 - Avoid non-deterministic behavior (random, time-dependent, UI-dependent, process-spawning tests).
-- Use windows crate types only via import paths confirmed with rust_win_search.
+- Do not include any imports for items not used in the unit tests.
+- Do NOT add use windows::... import lines unless a Windows API constant or type literal (e.g., FOLDERID_Desktop, GUID) appears directly in a test assertion. Never import Windows API symbols that are only consumed by the implementation.
+- The final test environment has access to the full windows API, but tests should NOT import or use Windows API types directly. All Windows API interaction must go through the function under test via super::*. Only import from windows:: if a Windows API constant or type is used directly in a test assertion value.
+- You have access to the tempfile, sha2, md5, rand, and regex crates in addition to the windows crate.
 - Do not use #[ignore].
-- If the problem involves GUI, message loops, interactive dialogs, tray icons, or non-deterministic system state that cannot be reliably tested in this environment, output exactly:
+- If the problem involves GUI, message loops, interactive dialogs, tray icons, or non-deterministic system state that cannot be reliably tested in an automated windows test environment, or if writing any meaningful test requires calling Windows API functions directly inside the test body (not through super::*), output exactly:
 SKIP: <one-line reason>
 
 ## Problem Markdown
@@ -207,7 +215,7 @@ SKIP: <one-line reason>
     match = RUST_FENCE_RE.search(text)
     if match:
         return match.group("code").strip() + "\n", None
-    if text.startswith("#[cfg(test)]"):
+    if text.startswith("#[cfg(test)]") or text.startswith("#[cfg(all(test, windows))]"):
         return text.rstrip() + "\n", None
     return None, "could not extract Rust test module"
 
@@ -233,6 +241,7 @@ def improve_tests(
     if improved_test_rs is None:
         LOGGER.warning("improve_tests skipped run_id=%s reason=%s", run_id, skip_reason)
         return TestImproveResult(test_rs=initial_test_rs, last_eval={}, skipped=True)
+    print(improved_test_rs)
 
     tools, _ = build_test_tools(eval_state=eval_state, stub_solution=stub_solution)
     tool_map = {t.name: t for t in tools}
