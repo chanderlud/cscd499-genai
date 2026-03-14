@@ -169,6 +169,14 @@ struct TestSummary {
     filtered_out: u32,
     passed_names: Vec<String>,
     failed_names: Vec<String>,
+    failed_details: Vec<FailedTestDetail>,
+}
+
+#[derive(Serialize, Default, Clone)]
+struct FailedTestDetail {
+    name: String,
+    output: String,
+    panic_message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -787,6 +795,10 @@ fn parse_test_summary(stdout: &str, ok: bool) -> TestSummary {
         r"test result:\s+(ok|FAILED)\.\s+(\d+)\s+passed;\s+(\d+)\s+failed;\s+(\d+)\s+ignored;\s+(\d+)\s+measured;\s+(\d+)\s+filtered out",
     ).unwrap();
     let test_line_re = Regex::new(r"^test (.+) \.\.\. (ok|FAILED)$").unwrap();
+    let failure_header_re = Regex::new(r"^---- (.+) stdout ----$").unwrap();
+    let panic_re = Regex::new(r"thread '[^']+' panicked at '([^']+)'(?:, .*)?$").unwrap();
+    let abs_win_path_re = Regex::new(r"[A-Za-z]:\\[^\s,']+").unwrap();
+    let abs_unix_path_re = Regex::new(r"/[^\s,']+").unwrap();
 
     let mut summary = TestSummary {
         ok,
@@ -813,7 +825,94 @@ fn parse_test_summary(stdout: &str, ok: bool) -> TestSummary {
         summary.filtered_out = caps[6].parse().unwrap_or(0);
     }
 
+    let mut details_by_name = BTreeMap::<String, FailedTestDetail>::new();
+    let lines: Vec<&str> = stdout.lines().collect();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        let Some(caps) = failure_header_re.captures(line) else {
+            i += 1;
+            continue;
+        };
+
+        let name = caps[1].to_string();
+        i += 1;
+        let mut block_lines = Vec::<String>::new();
+        while i < lines.len() {
+            let current = lines[i].trim();
+            if failure_header_re.is_match(current) || current == "failures:" {
+                break;
+            }
+            block_lines.push(lines[i].to_string());
+            i += 1;
+        }
+
+        let raw_block = block_lines.join("\n");
+        let output = sanitize_failure_output(&raw_block, &abs_win_path_re, &abs_unix_path_re);
+        let panic_message = extract_panic_message(
+            &raw_block,
+            &panic_re,
+            &abs_win_path_re,
+            &abs_unix_path_re,
+        );
+
+        details_by_name.insert(
+            name.clone(),
+            FailedTestDetail {
+                name,
+                output,
+                panic_message,
+            },
+        );
+    }
+
+    summary.failed_details = summary
+        .failed_names
+        .iter()
+        .filter_map(|name| details_by_name.get(name).cloned())
+        .collect();
+
     summary
+}
+
+fn sanitize_failure_output(raw: &str, abs_win_path_re: &Regex, abs_unix_path_re: &Regex) -> String {
+    let mut kept = Vec::<String>::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if abs_win_path_re.is_match(line) || abs_unix_path_re.is_match(line) {
+            continue;
+        }
+        let without_win = abs_win_path_re.replace_all(line, "");
+        let without_paths = abs_unix_path_re.replace_all(&without_win, "");
+        let cleaned = without_paths.trim();
+        if !cleaned.is_empty() {
+            kept.push(cleaned.to_string());
+        }
+    }
+    kept.join("\n").trim().to_string()
+}
+
+fn extract_panic_message(
+    raw: &str,
+    panic_re: &Regex,
+    abs_win_path_re: &Regex,
+    abs_unix_path_re: &Regex,
+) -> Option<String> {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(caps) = panic_re.captures(trimmed) {
+            let without_win = abs_win_path_re.replace_all(&caps[1], "");
+            let without_paths = abs_unix_path_re.replace_all(&without_win, "");
+            let msg = without_paths.trim();
+            if !msg.is_empty() {
+                return Some(msg.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn extract_between_markers(s: &str, start: &str, end: &str) -> Option<String> {

@@ -125,7 +125,7 @@ def build_test_tools(
                 summarize_tool_output("evaluate_rust", json.dumps(data, ensure_ascii=False)),
             )
             eval_state["last"] = data
-            repair_message = build_repair_message(data, full_main)
+            repair_message = build_repair_message(data, full_main, check_unused=False)
             print(repair_message)
             return repair_message
         except Exception as exc:
@@ -287,6 +287,7 @@ def improve_tests(
                     eval_state["last"],
                     current_test_rs,
                     problem_text=problem_text,
+                    check_unused=False,
                 )
                 improved_next, reason = generate_improved_tests(
                     problem_text=problem_text,
@@ -331,7 +332,7 @@ def improve_tests(
                 skipped=False,
             )
 
-        feedback = build_repair_message(last_eval, final_test_rs, problem_text=problem_text)
+        feedback = build_repair_message(last_eval, final_test_rs, problem_text=problem_text, check_unused=False)
         improved_next, reason = generate_improved_tests(
             problem_text=problem_text,
             current_test_rs=final_test_rs,

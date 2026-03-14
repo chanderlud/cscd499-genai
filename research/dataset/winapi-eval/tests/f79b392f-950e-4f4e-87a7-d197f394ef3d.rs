@@ -18,6 +18,7 @@ mod tests {
             CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_WRITE, PAGE_READWRITE,
         },
     };
+    use windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS;
 
     const FILE_LEN: usize = 64 * 1024;
 
@@ -79,7 +80,7 @@ mod tests {
     impl MappedView {
         fn new(file: &OwnedHandle, len: usize) -> Self {
             unsafe {
-                let hfile = HANDLE(file.as_raw_handle() as isize);
+                let hfile = HANDLE(file.as_raw_handle() as _);
 
                 let mapping = CreateFileMappingW(
                     hfile,
@@ -88,14 +89,13 @@ mod tests {
                     0,
                     len as u32,
                     PCWSTR::null(),
-                );
-                assert!(!mapping.is_invalid(), "CreateFileMappingW failed");
+                ).unwrap();
 
                 let p = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, len);
-                assert!(!p.is_null(), "MapViewOfFile failed");
+                assert!(!p.Value.is_null(), "MapViewOfFile failed");
 
                 Self {
-                    ptr: p as *mut u8,
+                    ptr: p.Value as *mut u8,
                     len,
                     mapping,
                 }
@@ -113,7 +113,7 @@ mod tests {
         fn drop(&mut self) {
             unsafe {
                 if !self.ptr.is_null() {
-                    let _ = UnmapViewOfFile(self.ptr as _);
+                    let _ = UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.ptr as *mut _ });
                 }
                 if !self.mapping.is_invalid() {
                     let _ = CloseHandle(self.mapping);

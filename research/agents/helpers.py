@@ -409,8 +409,42 @@ def is_only_unused_warnings(eval_result: Dict[str, Any]) -> bool:
     return True
 
 
+def format_failed_details(failed_details: Any, output_limit: int = 800) -> str:
+    if not isinstance(failed_details, Sequence) or isinstance(failed_details, (str, bytes)):
+        return ""
+
+    formatted_sections: list[str] = []
+    for detail in failed_details:
+        if not isinstance(detail, Mapping):
+            continue
+
+        test_name = str(detail.get("name") or "<unknown_test>")
+        panic_message = detail.get("panic_message")
+        panic_text = panic_message.strip() if isinstance(panic_message, str) else ""
+
+        output = detail.get("output")
+        output_text = output.strip() if isinstance(output, str) else ""
+        if len(output_text) > output_limit:
+            output_text = output_text[:output_limit] + " [truncated]"
+
+        section_lines = [f"[test: {test_name}]"]
+        if panic_text:
+            section_lines.append(f"Panic: {panic_text}")
+        if output_text:
+            section_lines.append("Output:")
+            section_lines.extend(
+                f"  {line}" if line else "  " for line in output_text.splitlines()
+            )
+        else:
+            section_lines.append("Output: (none)")
+
+        formatted_sections.append("\n".join(section_lines))
+
+    return "\n\n".join(formatted_sections)
+
+
 def build_repair_message(
-    eval_result: Dict[str, Any], main_rs: str, problem_text: str = ""
+    eval_result: Dict[str, Any], main_rs: str, problem_text: str = "", check_unused=True,
 ) -> str:
     build = eval_result.get("build") if isinstance(eval_result.get("build"), dict) else {}
     clippy = eval_result.get("clippy") if isinstance(eval_result.get("clippy"), dict) else {}
@@ -429,9 +463,25 @@ def build_repair_message(
         if build_diagnostics:
             parts.append("\n[build diagnostics]\n" + format_diagnostic_summary(build_diagnostics))
     elif not tests.get("ok") or False and test_summary:
-        parts.append("TESTS FAILED. The unit tests that failed are: " + ", ".join(test_summary.get(
-            "failed_names")) + ". Edit the code to pass the tests. Refer to the original problem for the exact requirements.")
-    elif is_only_unused_warnings(eval_result):
+        failed_details_text = format_failed_details(test_summary.get("failed_details", []))
+        if failed_details_text:
+            parts.append(
+                "TESTS FAILED. Fix the following failing tests:\n\n"
+                + failed_details_text
+                + "\n\nEdit the code to pass the tests. Refer to the original problem for the exact requirements."
+            )
+        else:
+            failed_names = test_summary.get("failed_names") or []
+            if isinstance(failed_names, Sequence) and not isinstance(failed_names, (str, bytes)):
+                failed_names_text = ", ".join(str(name) for name in failed_names) or "(unknown)"
+            else:
+                failed_names_text = "(unknown)"
+            parts.append(
+                "TESTS FAILED. The unit tests that failed are: "
+                + failed_names_text
+                + ". Edit the code to pass the tests. Refer to the original problem for the exact requirements."
+            )
+    elif not check_unused and is_only_unused_warnings(eval_result):
         parts.append("Code is good to go. Only unused import/variable warnings remain, which are acceptable.")
         passed = True
     elif clippy_diagnostics and clippy_diagnostics.get("items") or 0 > 0:

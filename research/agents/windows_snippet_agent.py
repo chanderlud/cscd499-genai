@@ -242,6 +242,7 @@ Rules:
     if not answer or not answer.strip():
         return None, "empty OpenRouter response"
     text = answer.strip()
+    print(text)
     match = RUST_FENCE_RE.search(text)
     if match:
         return match.group("code").strip() + "\n", None

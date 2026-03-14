@@ -258,15 +258,18 @@ def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int 
 if __name__ == "__main__":
     configure_logging()
     problem_text_input = open(
-        "../dataset/simple-winapi/problems/0a5d7328-0ec4-4088-83d2-7e1c0e8b27c7.md",
+        "../dataset/winapi-eval/problems/9beb547d-0701-4af0-a8c1-f7e09e0e6beb.md",
         "r",
         encoding="utf-8",
     ).read()
     unit_tests_text_input = open(
-        "../dataset/simple-winapi/tests/0a5d7328-0ec4-4088-83d2-7e1c0e8b27c7.rs",
+        "../dataset/winapi-eval/tests/9beb547d-0701-4af0-a8c1-f7e09e0e6beb.rs",
         "r",
         encoding="utf-8",
     ).read()
 
     r = solve_problem(problem_text_input, unit_tests_text_input)
     print(r)
+
+    out = open("../dataset/winapi-eval/solutions/9beb547d-0701-4af0-a8c1-f7e09e0e6beb.md")
+    out.write(r.main_rs)
