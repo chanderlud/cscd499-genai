@@ -45,7 +45,6 @@ Code constraints:
 - Use proper error propagation for HRESULT/WIN32_ERROR patterns.
 - Keep behavior focused on the problem requirements.
 - Include this import near the top:
-  #[allow(unused_imports)]
   use windows::core::{Result, Error};
 
 Available crates:
@@ -66,14 +65,17 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
 
 Quality rules:
 - Use `?` operator for Result-returning calls.
-- For non-Result Win32 calls, check the return value and call `GetLastError` / `windows::core::Error::from_win32()`.
+- After a failing non-`Result` Win32 call, call `windows::core::Error::from_win32()` — no argument — to capture `GetLastError()` as a `windows::core::Error`.
+- To convert a raw `u32` error code to an `HRESULT`, call `HRESULT::from_win32(code)` — one `u32` argument. Never call `Error::from_win32(code)` with an argument; that method does not exist.
 - Minimize `unsafe` blocks; justify each with a comment.
 - The snippet must compile and pass clippy with no warnings (deny(warnings) is enforced).
 
-## HRESULT / WIN32_ERROR Error-Handling Reference
+## Win32 Error-Handling Reference
 
-When a Win32 API returns a raw `u32` error code or a `WIN32_ERROR` value and you need
-an `HRESULT`, use the following patterns (do NOT construct HRESULT literals manually):
+### `HRESULT` / `WIN32_ERROR` conversions (for known error codes)
+
+When you have a raw Win32 error code (`u32`) or a `WIN32_ERROR` value and need an `HRESULT`,
+use the following patterns (do NOT construct HRESULT literals manually):
 
 ```rust
 use windows::core::HRESULT;
@@ -96,11 +98,26 @@ fn example() -> HRESULT {
 }
 ```
 
-Key rules derived from the above:
+Key rules:
 - `WIN32_ERROR` has a `.0` field (the raw `u32`); pass it to `HRESULT::from_win32()` when you need the raw value.
 - Prefer `err.to_hresult()` over `.0` when you already hold a `WIN32_ERROR` — it is more idiomatic.
 - Never hard-code `HRESULT(0x80070005_u32 as i32)` or similar literals.
-- `windows::core::Error::from_win32()` (no argument) reads `GetLastError()` automatically; use it after a failing non-`Result` call.
+
+### DO NOT CONFUSE these APIs
+
+// ❌ WRONG — Error has no from_win32(code) method:
+//   windows::core::Error::from_win32(code)
+//
+// ✅ CORRECT — use HRESULT::from_win32 for a code, Error::from_win32() for GetLastError:
+//   HRESULT::from_win32(code)          // takes a u32 argument
+//   windows::core::Error::from_hresult(hresult) // takes a HRESULT argument
+//   windows::core::Error::from_thread() // zero arguments — reads GetLastError()
+
+### `windows::core::Error` — reads `GetLastError()` automatically (zero arguments)
+
+Use this after a failing non-`Result` Win32 call:
+- `windows::core::Error::from_win32()` takes **no arguments**.
+- It captures the current thread's `GetLastError()` value as a `windows::core::Error`.
 """
 
 REPAIR_PROMPT_TEMPLATE = """Your previous code attempt failed to compile/pass tests. Fix ONLY the reported errors.
@@ -110,8 +127,8 @@ Do NOT rewrite from scratch - make targeted fixes.
 {context}
 
 Windows repair reminders:
-- Use `HRESULT::from_win32(code)` or `err.to_hresult()` when mapping Win32 errors to HRESULT; never hard-code HRESULT literals.
-- After a failing non-`Result` Win32 call, use `windows::core::Error::from_win32()` (no argument).
+- To wrap a raw `u32` code as an `HRESULT`, use `HRESULT::from_win32(code)` (one argument) or `err.to_hresult()` for a `WIN32_ERROR` value.
+- To capture `GetLastError()` as a `windows::core::Error`, use `windows::core::Error::from_thread()` with no argument. `Error::from_win32` does not accept a `u32` argument — that overload does not exist.
 - Prefer W-suffix Win32 APIs and minimize `unsafe` scope.
 
 Output the complete fixed src/main.rs in a single ```rust code fence.

@@ -1089,6 +1089,14 @@ def build_repair_context(
     diagnostics = truncate_feedback(diagnostics, 4000)
     if not rustdoc_info.strip():
         rustdoc_info = "(no symbol resolutions available)"
+    from_win32_confusion_hint = ""
+    if "from_win32" in diagnostics and "Error" in diagnostics:
+        from_win32_confusion_hint = (
+            "\n\n"
+            "**`from_win32` confusion detected:** `windows::core::Error::from_thread()` takes **zero arguments** "
+            "and reads `GetLastError()`. If you need to convert a `u32` code, use `HRESULT::from_win32(code)` "
+            "instead. Do not call `Error::from_win32(code)`."
+        )
 
     return (
         "## Previous Code\n"
@@ -1104,6 +1112,7 @@ def build_repair_context(
         "- Use the symbol paths from the Rustdoc resolution section for correct imports\n"
         "- Do not change the overall approach, only fix the specific errors\n"
         "- Output the complete fixed src/main.rs in a single ```rust code fence\n"
+        f"{from_win32_confusion_hint}"
     )
 
 

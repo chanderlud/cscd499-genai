@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
 use windows::core::{Error, Result};
 
 fn wide_null(s: &OsStr) -> Vec<u16> {

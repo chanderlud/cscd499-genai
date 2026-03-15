@@ -2,7 +2,6 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
-#[allow(unused_imports)]
 use windows::core::{Error, Result};
 
 fn wide_null(s: &OsStr) -> Vec<u16> {
