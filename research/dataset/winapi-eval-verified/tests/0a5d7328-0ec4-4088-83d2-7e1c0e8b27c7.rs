@@ -140,18 +140,17 @@ mod tests {
     fn test_create_dir_returns_error_for_invalid_path() {
         // Test with an invalid path that cannot be created
         // On Windows, this might be a path with invalid characters
-        let invalid_path = Path::new("");
+        let invalid_path = Path::new("bad*path");
 
         // Empty path should likely fail or handle gracefully
         let result = create_dir_all(invalid_path);
-        // The exact behavior depends on implementation, but we verify it handles it
-        assert!(result.is_err() || result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_create_dir_with_special_characters_in_path() {
         let temp_dir = std::env::temp_dir();
-        let test_dir = temp_dir.join("rust_test_special").join("test!@#$%^&*()_+");
+        let test_dir = temp_dir.join("rust_test_special").join("test!@#$%^&()_+");
 
         // Clean up if exists
         let _ = fs::remove_dir_all(&test_dir);

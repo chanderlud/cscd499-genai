@@ -1,13 +1,11 @@
-//! Named Pipe IPC for daemon-style operation
-//! Allows GlazeWM to send toggle/show/hide commands
-
 use std::sync::mpsc;
 use std::thread;
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::CloseHandle;
+use windows::core::{PCWSTR, Result};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_PIPE_CONNECTED};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL,
+    FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
+    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
@@ -64,7 +62,6 @@ pub fn start_ipc_server() -> mpsc::Receiver<IpcCommand> {
 /// Wait for a single command on the named pipe
 fn wait_for_command() -> Option<IpcCommand> {
     unsafe {
-        // Create the named pipe
         let pipe_name: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
         let pipe = CreateNamedPipeW(
@@ -83,19 +80,15 @@ fn wait_for_command() -> Option<IpcCommand> {
             return None;
         }
 
-        // Wait for a client to connect
         let connected = ConnectNamedPipe(pipe, None);
         if connected.is_err() {
-            // Could be ERROR_PIPE_CONNECTED which is actually ok
-            let err = windows::Win32::Foundation::GetLastError();
-            if err.0 != 535 {
-                // ERROR_PIPE_CONNECTED
+            let err = GetLastError();
+            if err != ERROR_PIPE_CONNECTED {
                 CloseHandle(pipe).ok();
                 return None;
             }
         }
 
-        // Read the command
         let mut buffer = [0u8; 256];
         let mut bytes_read = 0u32;
 
@@ -108,7 +101,6 @@ fn wait_for_command() -> Option<IpcCommand> {
             None
         };
 
-        // Disconnect and close
         DisconnectNamedPipe(pipe).ok();
         CloseHandle(pipe).ok();
 
@@ -122,14 +114,13 @@ pub fn send_command(cmd: &str) -> bool {
     unsafe {
         let pipe_name: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
-        // Try to open the existing pipe
         let pipe = CreateFileW(
             PCWSTR(pipe_name.as_ptr()),
             (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
             FILE_SHARE_NONE,
             None,
             OPEN_EXISTING,
-            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+            FILE_FLAGS_AND_ATTRIBUTES(FILE_ATTRIBUTE_NORMAL.0),
             None,
         );
 
@@ -147,4 +138,17 @@ pub fn send_command(cmd: &str) -> bool {
             false
         }
     }
+}
+
+fn main() -> windows::core::Result<()> {
+    let rx = start_ipc_server();
+
+    for cmd in rx {
+        println!("Received command: {:?}", cmd);
+        if cmd == IpcCommand::Quit {
+            break;
+        }
+    }
+
+    Ok(())
 }

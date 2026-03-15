@@ -1,8 +1,7 @@
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
 
     #[test]
     fn test_append_all_creates_file_when_missing() {
@@ -11,6 +10,15 @@ mod tests {
         append_all(&path, b"hello").unwrap();
         assert!(path.exists());
         assert_eq!(fs::read(&path).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn test_append_all_empty_data_creates_empty_file_when_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("new_empty_file.txt");
+        append_all(&path, b"").unwrap();
+        assert!(path.exists());
+        assert_eq!(fs::read(&path).unwrap(), b"");
     }
 
     #[test]
@@ -51,9 +59,11 @@ mod tests {
     }
 
     #[test]
-    fn test_append_all_invalid_path_fails() {
-        let invalid_path = Path::new("/invalid/path/that/does/not/exist/file.txt");
-        let result = append_all(invalid_path, b"data");
+    fn test_append_all_missing_parent_directory_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("missing").join("file.txt");
+        let result = append_all(&path, b"data");
         assert!(result.is_err());
+        assert!(!path.exists());
     }
 }
