@@ -1,3 +1,36 @@
+import json
+import logging
+import os
+import uuid
+import re
+from pathlib import Path
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Sequence, Mapping, List
+import httpx
+import time
+
+from langchain_core.messages import HumanMessage, ToolMessage, trim_messages
+from langchain_ollama import ChatOllama
+from langchain_core.tools import tool
+
+
+LOGGER = logging.getLogger(__name__)
+RUST_FENCE_RE = re.compile(r"```(?:rust)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+
+IGNORABLE_UNUSED_CODES = frozenset({
+    "unused_imports",
+    "unused_variables",
+    "dead_code",
+    "unused_mut",
+    "unused_assignments",
+})
+
+
+class FinalAnswerException(Exception):
+    def __init__(self, main_rs: str):
+        super().__init__("final_answer")
+        self.main_rs = main_rs
 
 
 def extract_rust_from_messages(messages):
@@ -18,37 +51,6 @@ def extract_rust_from_messages(messages):
             if code:
                 return code
     return None
-import json
-import logging
-import os
-import uuid
-import re
-from pathlib import Path
-from collections import defaultdict
-from typing import Any, Dict, Optional, Sequence, Mapping
-import httpx
-import time
-
-from langchain_core.messages import HumanMessage, ToolMessage, trim_messages
-from langchain_ollama import ChatOllama
-from langchain_core.tools import tool
-
-
-LOGGER = logging.getLogger(__name__)
-
-IGNORABLE_UNUSED_CODES = frozenset({
-    "unused_imports",
-    "unused_variables",
-    "dead_code",
-    "unused_mut",
-    "unused_assignments",
-})
-
-
-class FinalAnswerException(Exception):
-    def __init__(self, main_rs: str):
-        super().__init__("final_answer")
-        self.main_rs = main_rs
 
 
 def configure_logging(level: Optional[str] = None) -> None:
@@ -707,8 +709,9 @@ def code_help_tool(prompt: str, run_id: str) -> str:
     if not api_key:
         LOGGER.warning("review_code_with_openrouter skipped run_id=%s OPENROUTER_API_KEY not set", run_id)
         return ""
+
     base_url = env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = env("OPENROUTER_REVIEW_MODEL", "arcee-ai/trinity-large-preview:free")
+    model = env("OPENROUTER_REVIEW_MODEL", "openrouter/hunter-alpha")
 
     try:
         with httpx.Client(timeout=220.0) as client:
@@ -747,6 +750,351 @@ def code_help_tool(prompt: str, run_id: str) -> str:
             e,
         )
         return ""
+
+
+def openrouter_generate_code(messages: List[Dict[str, str]]) -> Optional[str]:
+    """Call OpenRouter chat completions for code generation and return content."""
+    api_key = os.getenv("OPENROUTER_API_KEY") or ""
+    if not api_key:
+        LOGGER.warning("openrouter_generate_code skipped OPENROUTER_API_KEY not set")
+        return None
+
+    base_url = env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    model = (
+        os.getenv("OPENROUTER_CODE_MODEL")
+        or os.getenv("OPENROUTER_REVIEW_MODEL")
+        or "openrouter/hunter-alpha"
+    )
+    max_tokens = int(os.getenv("OPENROUTER_MAX_TOKENS", "4096"))
+    temperature = float(os.getenv("OPENROUTER_TEMPERATURE", "0.2"))
+
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=300.0) as client:
+            response = client.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPError as exc:
+        LOGGER.warning("openrouter_generate_code http_error=%s", exc)
+        return None
+    except Exception as exc:
+        LOGGER.warning("openrouter_generate_code request_failed=%s", exc)
+        return None
+
+    if not isinstance(data, dict):
+        LOGGER.warning("openrouter_generate_code malformed response type=%s", type(data).__name__)
+        return None
+
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        LOGGER.warning("openrouter_generate_code missing choices")
+        return None
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        LOGGER.warning("openrouter_generate_code malformed choice")
+        return None
+    message = first.get("message")
+    if not isinstance(message, dict):
+        LOGGER.warning("openrouter_generate_code malformed message")
+        return None
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        LOGGER.warning("openrouter_generate_code empty content")
+        return None
+
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    LOGGER.info(
+        "openrouter_generate_code ok model=%s duration_ms=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+        model,
+        duration_ms,
+        usage.get("prompt_tokens"),
+        usage.get("completion_tokens"),
+        usage.get("total_tokens"),
+    )
+    return content
+
+
+def extract_rust_code_block(text: str) -> Optional[str]:
+    if not isinstance(text, str):
+        return None
+    matches = list(RUST_FENCE_RE.finditer(text))
+    if matches:
+        code = matches[-1].group(1).strip()
+        if code:
+            return code
+    stripped = text.strip()
+    if "fn " in stripped or "\nuse " in f"\n{stripped}" or stripped.startswith("use "):
+        return stripped
+    return None
+
+
+def extract_windows_api_symbols(rust_code: str) -> List[str]:
+    if not isinstance(rust_code, str) or not rust_code.strip():
+        return []
+
+    ignore = {
+        "Result", "Error", "String", "Vec", "Option", "Some", "None", "Ok", "Err", "Self",
+        "Box", "Path", "PathBuf", "HashMap", "HashSet", "From", "Into", "Default", "Clone",
+        "Debug", "Display", "usize", "isize", "u8", "u16", "u32", "u64", "i8", "i16", "i32",
+        "i64", "bool", "str",
+    }
+    symbols: set[str] = set()
+
+    use_leaf_re = re.compile(r"\buse\s+windows::[A-Za-z0-9_:{}*,\s]+\s*;", re.MULTILINE)
+    for use_stmt in use_leaf_re.findall(rust_code):
+        leaf_candidates = re.findall(r"\b([A-Z][A-Za-z0-9_]+)\b", use_stmt)
+        symbols.update(leaf_candidates)
+
+    bare_upper_re = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
+    for match in bare_upper_re.findall(rust_code):
+        symbols.add(match)
+
+    w_suffix_fn_re = re.compile(r"\b([A-Z][A-Za-z0-9_]+W)\s*\(")
+    for match in w_suffix_fn_re.findall(rust_code):
+        symbols.add(match)
+
+    unsafe_call_re = re.compile(r"unsafe\s*\{[^{}]*\b([A-Z][A-Za-z0-9_]+)\s*\(", re.DOTALL)
+    for match in unsafe_call_re.findall(rust_code):
+        symbols.add(match)
+
+    cleaned = []
+    for symbol in sorted(symbols):
+        if symbol in ignore:
+            continue
+        if symbol.startswith("E") and symbol[1:].isdigit():
+            continue
+        cleaned.append(symbol)
+    return cleaned
+
+
+def batch_rustdoc_lookup(symbols: List[str], rustdocs_base: str, client: httpx.Client) -> str:
+    if not symbols:
+        return ""
+    selected = symbols[:20]
+    sections: List[str] = ["## Rustdoc Symbol Resolution", ""]
+    resolved_count = 0
+    for symbol in selected:
+        LOGGER.debug("batch_rustdoc_lookup symbol=%s", symbol)
+        try:
+            response = client.get(
+                f"{rustdocs_base.rstrip('/')}/search",
+                params={"q": symbol, "limit": 5},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            LOGGER.warning("batch_rustdoc_lookup failed symbol=%s error=%s", symbol, exc)
+            continue
+
+        if isinstance(data, dict):
+            results = data.get("results") if isinstance(data.get("results"), list) else []
+        elif isinstance(data, list):
+            results = data
+        else:
+            results = []
+        if not results:
+            continue
+
+        resolved_count += 1
+        sections.append(f"### {symbol}")
+        for item in results[:5]:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind") or item.get("type") or "unknown"
+            path = item.get("path") or item.get("full_path") or item.get("name") or ""
+            signature = item.get("signature") or item.get("decl") or ""
+            sections.append(f"- Kind: {kind}")
+            sections.append(f"- Path: {path}")
+            if signature:
+                sections.append(f"- Signature: {signature}")
+            sections.append("")
+
+    LOGGER.info(
+        "batch_rustdoc_lookup complete requested=%s resolved=%s",
+        len(selected),
+        resolved_count,
+    )
+    return "\n".join(sections).strip()
+
+
+def eval_server_evaluate(
+    main_rs: str,
+    unit_tests_private: str,
+    fixed_deps: str,
+    eval_base: str,
+    client: httpx.Client,
+    run_tests: bool = True,
+) -> Dict[str, Any]:
+    full_main = (
+        ensure_empty_main(normalize_rust_text(main_rs, field_name="main_rs")).rstrip()
+        + "\n\n"
+        + unit_tests_private.strip()
+        + "\n"
+    )
+    response = client.post(
+        f"{eval_base.rstrip('/')}/evaluate",
+        json={
+            "main_rs": full_main,
+            "dependencies": fixed_deps,
+            "run_tests": run_tests,
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("evaluate response must be a JSON object")
+    return payload
+
+
+def eval_server_format(snippet: str, eval_base: str, client: httpx.Client) -> Optional[str]:
+    response = client.post(
+        f"{eval_base.rstrip('/')}/format",
+        json={"snippet": normalize_rust_text(snippet, field_name="snippet")},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("ok") and isinstance(payload.get("formatted"), str):
+        return normalize_rust_text(payload["formatted"], field_name="formatted")
+    return None
+
+
+def eval_server_warmup(eval_base: str, client: httpx.Client) -> None:
+    started = time.perf_counter()
+    try:
+        response = client.get(f"{eval_base.rstrip('/')}/warmup")
+        response.raise_for_status()
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        LOGGER.info("eval_server_warmup ok duration_ms=%s", duration_ms)
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        LOGGER.warning("eval_server_warmup failed duration_ms=%s error=%s", duration_ms, exc)
+
+
+def build_repair_context(
+    eval_result: Dict[str, Any],
+    main_rs: str,
+    rustdoc_info: str,
+    problem_text: str,
+) -> str:
+    diagnostics = build_repair_message(eval_result, main_rs, problem_text=problem_text)
+    diagnostics = truncate_feedback(diagnostics, 4000)
+    if not rustdoc_info.strip():
+        rustdoc_info = "(no symbol resolutions available)"
+
+    return (
+        "## Previous Code\n"
+        "```rust\n"
+        f"{main_rs}\n"
+        "```\n\n"
+        "## Build/Test Results\n"
+        f"{diagnostics}\n\n"
+        "## Unresolved/Incorrect Symbol Information\n"
+        f"{rustdoc_info}\n\n"
+        "## Repair Instructions\n"
+        "- Fix the build errors listed above\n"
+        "- Use the symbol paths from the Rustdoc resolution section for correct imports\n"
+        "- Do not change the overall approach, only fix the specific errors\n"
+        "- Output the complete fixed src/main.rs in a single ```rust code fence\n"
+    )
+
+
+def extract_symbols_from_diagnostics(eval_result: Dict[str, Any]) -> List[str]:
+    patterns = [
+        re.compile(r"unresolved import(?: `| ')?([A-Za-z0-9_:]+)"),
+        re.compile(r"cannot find (?:type|function|value|struct|enum|module) `([A-Za-z0-9_]+)`"),
+        re.compile(r"no method named `([A-Za-z0-9_]+)`"),
+        re.compile(r"expected `([A-Za-z0-9_:]+)`"),
+        re.compile(r"found `([A-Za-z0-9_:]+)`"),
+    ]
+    symbols: set[str] = set()
+
+    for stage in ("build", "clippy"):
+        stage_data = eval_result.get(stage)
+        if not isinstance(stage_data, dict):
+            continue
+        diagnostics = stage_data.get("diagnostics")
+        if not isinstance(diagnostics, dict):
+            continue
+        items = diagnostics.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            message = str(item.get("message") or "")
+            rendered = str(item.get("rendered") or "")
+            combined = f"{message}\n{rendered}"
+            for pattern in patterns:
+                for match in pattern.findall(combined):
+                    symbol = match.split("::")[-1]
+                    if symbol:
+                        symbols.add(symbol)
+
+    ignore = {"Result", "Error", "String", "Vec", "Option", "Some", "None", "Ok", "Err"}
+    return [symbol for symbol in sorted(symbols) if symbol not in ignore]
+
+
+class StepRecorder:
+    def __init__(self, run_id: str, output_dir: Optional[Path] = None):
+        self.run_id = run_id
+        base = output_dir or Path("out")
+        self.steps_dir = base / "steps" / run_id
+        self.steps_dir.mkdir(parents=True, exist_ok=True)
+
+    def record_step(
+        self,
+        attempt: int,
+        step_type: str,
+        code: str,
+        eval_result: Optional[Dict[str, Any]] = None,
+        extra_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "attempt": attempt,
+            "step_type": step_type,
+            "code": code,
+            "eval_result": eval_result,
+            "extra_context": extra_context or {},
+        }
+        stem = f"step_{attempt}_{step_type}"
+        (self.steps_dir / f"{stem}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (self.steps_dir / f"{stem}.rs").write_text(code or "", encoding="utf-8")
+        LOGGER.info(
+            "step_recorded run_id=%s attempt=%s step_type=%s code_len=%s",
+            self.run_id,
+            attempt,
+            step_type,
+            len(code or ""),
+        )
+
+    def record_final(self, code: str, eval_result: Optional[Dict[str, Any]] = None) -> None:
+        self.record_step(
+            attempt=0,
+            step_type="final",
+            code=code,
+            eval_result=eval_result,
+            extra_context={"final": True},
+        )
 
 def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: Optional[dict] = None, run_tests: bool = True):
     eval_state = _eval_state if _eval_state is not None else {}

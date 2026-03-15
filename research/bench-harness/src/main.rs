@@ -1,5 +1,2 @@
-use windows::core::Result;
-
-fn main() {
-}
+fn main() {}
 

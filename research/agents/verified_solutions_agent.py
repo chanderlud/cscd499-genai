@@ -1,9 +1,81 @@
+import argparse
+import os
+import uuid
 from dataclasses import dataclass
-from langgraph.prebuilt import create_react_agent
-from helpers import *
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import httpx
+
+from helpers import (
+    LOGGER,
+    StepRecorder,
+    batch_rustdoc_lookup,
+    build_repair_context,
+    configure_logging,
+    env,
+    eval_server_evaluate,
+    eval_server_format,
+    eval_server_warmup,
+    extract_rust_code_block,
+    extract_symbols_from_diagnostics,
+    extract_windows_api_symbols,
+    openrouter_generate_code,
+    preview_text,
+)
 
 
-FIXED_DEPENDENCIES = open("../rust_dependencies.md", "r").read()
+FIXED_DEPENDENCIES = (
+    Path(__file__).resolve().parent.parent / "rust_dependencies.md"
+).read_text(encoding="utf-8")
+
+SYSTEM_PROMPT = """You are an expert Rust engineer specializing in Win32/Windows API programming using the `windows` crate.
+
+Output requirements:
+- Output exactly one complete `src/main.rs` inside a single ```rust code fence.
+- No explanation text outside the fence.
+- Do not include tests.
+- Do not include `fn main()`.
+- Use only stable Rust.
+
+Code constraints:
+- Use the `windows` crate for Win32 APIs and prefer W-suffix APIs where applicable.
+- Minimize `unsafe` scope to the smallest possible block.
+- Use proper error propagation for HRESULT/WIN32_ERROR patterns.
+- Keep behavior focused on the problem requirements.
+- Include this import near the top:
+  #[allow(unused_imports)]
+  use windows::core::{Result, Error};
+
+Available crates:
+- windows
+- rand
+- md5
+- regex
+- tempfile
+- sha2
+
+Useful helper pattern:
+```rust
+fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
+    use std::{iter::once, os::windows::ffi::OsStrExt};
+    s.encode_wide().chain(once(0)).collect()
+}
+```
+
+Error handling hints:
+- For APIs that return `BOOL`, check `as_bool()` and return `Error::from_win32()` on failure.
+- For APIs that return handles/pointers/sentinels, validate against invalid values and convert OS errors appropriately.
+"""
+
+REPAIR_PROMPT_TEMPLATE = """Your previous code attempt failed to compile/pass tests. Fix ONLY the reported errors.
+Use the Rustdoc symbol resolution below to correct any import paths.
+Do NOT rewrite from scratch - make targeted fixes.
+
+{context}
+
+Output the complete fixed src/main.rs in a single ```rust code fence.
+"""
 
 
 @dataclass
@@ -12,264 +84,346 @@ class SolveResult:
     last_eval: Dict[str, Any]
 
 
-def build_agent(tools):
-    model_name = os.getenv("OLLAMA_MODEL", "glm-4.7-flash:latest")
-    model_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+def _error_score(eval_result: Dict[str, Any]) -> int:
+    build = eval_result.get("build") if isinstance(eval_result.get("build"), dict) else {}
+    clippy = eval_result.get("clippy") if isinstance(eval_result.get("clippy"), dict) else {}
+    tests = eval_result.get("tests") if isinstance(eval_result.get("tests"), dict) else {}
 
-    model = ChatOllama(
-        model=model_name,
-        base_url=model_url,
-        temperature=0,
-        num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", "8000")),
-    )
-    context_limit = int(os.getenv("OLLAMA_CONTEXT_TOKENS", "6000"))
+    def diag_errors(stage: Dict[str, Any]) -> int:
+        diagnostics = stage.get("diagnostics") if isinstance(stage.get("diagnostics"), dict) else {}
+        try:
+            return int(diagnostics.get("errors", 0))
+        except (TypeError, ValueError):
+            return 0
 
-    system_prompt = """You solve Win32/Windows API programming problems in Rust.
-
-Hard rules:
-- Use ms_doc_search and rust_win_search to confirm any Win32 API signature/behavior and the correct Rust windows crate path/features.
-- Use the code_help tool when you need help solving a problem in your code.
-- When calling code_help, always pass problem_text (the original problem statement) and doc_results (concatenated output from any ms_doc_search / rust_win_search calls already made for this problem).
-- Write stable Rust that compiles as src/main.rs. Do NOT include tests. The judge will append hidden tests after your code.
-- You may call evaluate_rust to run build/clippy/tests. Keep iterating until it reports ok=true.
-- When evaluate_rust returns, read the build diagnostics carefully. If errors say unresolved import or use of undeclared type, add the missing use statements at the top of the file and call evaluate_rust again with corrected code.
-- Do NOT call evaluate_rust again with identical code after a failed build. You must make a concrete repair first.
-- Only before the final output (once evaluate_rust passes without build errors), call format_rust on the final src/main.rs and use the formatted result.
-- When you have a complete, formatted, tested solution, call the final_answer tool with the full src/main.rs content.
-- Do not write a main() function.
-- After evaluate_rust returns ok=true and before calling final_answer, call code_review
-  with the current src/main.rs and the original problem text.
-- If code_review returns VERDICT: NEEDS_CHANGES or REJECT, address all CRITICAL and MAJOR
-  issues listed, then call evaluate_rust again to confirm the fix compiles and passes tests.
-  Only call final_answer when code_review returns VERDICT: APPROVE or only MINOR issues remain.
-
-Quality rules:
-- Prefer safe wrappers. If unsafe is required, minimize scope and justify via comments.
-- Always include this import at top of the output (even if unused):
-  #[allow(unused_imports)]
-  use windows::core::{Result, Error};
-- Utilize error propagation on API methods that return Result.
-- When API methods do not return Result directly, use the appropriate pattern to check the return for success, get the last error if needed, and return an error.
-- Dependencies are fixed and MUST NOT be output by the model.
-- The windows, rand, md5, and regex crates are available for use. The rust_win_search tool provides import paths in the windows crate.
-
-Windows Crate Hints:
-- Prefer using the W variants of functions
-- Functions that accept a `windows_core::Param<T>`` expect `Some(&T)`` as the parameter
-- Functions that accept a specific Option<T> may have Some(T) or None as the parameter
-
-The following helper may be used to create wide strings.
-```
-fn wide_null(s: &OsStr) -> Vec<u16> {
-    // these imports are REQUIRED for the function to compile.
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
-    s.encode_wide().chain(iter::once(0)).collect()
-}
-
-fn example() {
-     let wide_str = wide_null(OsStr::new(r""));
-     SomeFunctionW(Some(&PCWSTR(wide_str.as_ptr()));
-}
-```
-"""
-
-    LOGGER.info(
-        "build_agent model=%s base_url=%s tool_count=%s",
-        model_name,
-        model_url,
-        len(tools),
-    )
-
-    agent = create_react_agent(
-        model=model,
-        tools=tools,
-        prompt=system_prompt,
-    )
-
-    return agent.with_config({"recursion_limit": 40}), model, context_limit
+    score = diag_errors(build) + diag_errors(clippy)
+    tests_info = tests.get("tests") if isinstance(tests.get("tests"), dict) else {}
+    try:
+        score += int(tests_info.get("failed", 0))
+    except (TypeError, ValueError):
+        pass
+    if eval_result.get("ok") is True:
+        score = 0
+    return score
 
 
-def solve_problem(problem_text: str, unit_tests_private: str, max_attempts: int = 6) -> SolveResult:
+def _first_diagnostic_hint(eval_result: Dict[str, Any]) -> str:
+    for stage in ("build", "clippy"):
+        stage_data = eval_result.get(stage)
+        if not isinstance(stage_data, dict):
+            continue
+        diagnostics = stage_data.get("diagnostics")
+        if not isinstance(diagnostics, dict):
+            continue
+        items = diagnostics.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            message = item.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+    return "the top compiler error"
+
+
+def solve_problem(
+    problem_text: str,
+    unit_tests_private: str,
+    max_attempts: int = 8,
+    output_dir: Optional[Path] = None,
+) -> SolveResult:
     run_id = uuid.uuid4().hex[:8]
-    eval_state: Dict[str, Any] = {}
-    tools, _ = build_tools(unit_tests_private, FIXED_DEPENDENCIES, eval_state)
-    agent, agent_model, context_limit = build_agent(tools)
-    tool_map = {t.name: t for t in tools}
-
-    feedback = ""
-    last_eval: Dict[str, Any] = {}
-    refactor_done = False
-    refactor_repair_rs: Optional[str] = None
+    eval_base = env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
+    rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
+    recorder = StepRecorder(run_id=run_id, output_dir=output_dir)
 
     LOGGER.info(
-        "solve_problem start run_id=%s problem_len=%s hidden_tests_len=%s max_attempts=%s",
+        "solve_problem start run_id=%s attempts=%s problem_len=%s tests_len=%s",
         run_id,
+        max_attempts,
         len(problem_text),
         len(unit_tests_private),
-        max_attempts,
     )
 
-    for attempt in range(1, max_attempts + 1):
-        LOGGER.info(
-            "solve_problem attempt_start run_id=%s attempt=%s feedback_len=%s",
-            run_id,
-            attempt,
-            len(feedback),
-        )
-        if refactor_repair_rs:
-            run_input = (
-                    problem_text
-                    + "\n\n---\nREPAIR FEEDBACK:\n"
-                    + truncate_feedback(feedback, 3000)
-                    + "\n\n---\nREFACTORED CODE TO REPAIR (fix only the errors above, do not rewrite from scratch):\n```rust\n"
-                    + refactor_repair_rs
-                    + "\n```"
-            )
-            refactor_repair_rs = None
-        elif feedback:
-            run_input = problem_text + "\n\n---\nREPAIR FEEDBACK:\n" + truncate_feedback(feedback, 3000)
-        else:
-            run_input = problem_text
+    best_code = ""
+    best_eval: Dict[str, Any] = {}
+    best_score = 10**9
+    previous_code = ""
+    same_streak = 0
+    repair_context = ""
 
-        messages = [{"role": "user", "content": run_input}]
-        messages = compress_old_tool_messages(messages, keep_last_n=1)
-        messages = apply_context_window(messages, max_tokens=context_limit)
-        eval_state.clear()
+    with httpx.Client(timeout=120.0) as client:
+        eval_server_warmup(eval_base, client)
 
-        invoke_started = time.perf_counter()
-        main_rs: Optional[str] = None
-        try:
-            result = agent.invoke({"messages": messages})
-        except FinalAnswerException as answer:
-            LOGGER.info(
-                "solve_problem final_answer_exception run_id=%s attempt=%s main_rs_len=%s",
-                run_id,
-                attempt,
-                len(answer.main_rs),
-            )
-            main_rs = answer.main_rs
-        else:
-            duration_ms = int((time.perf_counter() - invoke_started) * 1000)
-            msgs = result.get("messages") or []
-            LOGGER.debug(
-                "agent_invoke completed run_id=%s attempt=%s duration_ms=%s message_count=%s",
-                run_id,
-                attempt,
-                duration_ms,
-                len(msgs),
-            )
-            if main_rs is None:
-                salvaged_main_rs = extract_rust_from_messages(msgs)
-                if salvaged_main_rs:
-                    main_rs = salvaged_main_rs
-                    LOGGER.warning(
-                        "solve_problem salvaged_from_messages attempt=%s",
-                        attempt + 1,
-                    )
-                elif eval_state.get("last", {}):
-                    feedback = build_repair_message(
-                        eval_state["last"], "", problem_text=problem_text
-                    )
-                    continue
-                else:
-                    raise RuntimeError("Agent did not produce a final answer.")
+        for attempt in range(1, max_attempts + 1):
+            user_prompt = problem_text if attempt == 1 else REPAIR_PROMPT_TEMPLATE.format(context=repair_context)
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
 
-        if main_rs is None:
-            raise RuntimeError("Agent finished without calling final_answer.")
+            response_text: Optional[str] = None
+            for retry in range(2):
+                response_text = openrouter_generate_code(messages)
+                if response_text is not None:
+                    break
+                if retry == 0:
+                    retry_prompt = user_prompt + "\n\nPlease generate code. Output only a ```rust code block."
+                    messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": retry_prompt},
+                    ]
 
-        LOGGER.info(
-            "solve_problem format_candidate run_id=%s attempt=%s main_rs_len=%s",
-            run_id,
-            attempt,
-            len(main_rs),
-        )
-        formatted = tool_map["format_rust"].invoke({"snippet": main_rs})
-        if isinstance(formatted, str) and not (
-                formatted.startswith("format_rust error") or formatted.startswith("format_rust failed")
-        ):
-            LOGGER.info(
-                "solve_problem format_applied run_id=%s attempt=%s before_len=%s after_len=%s",
-                run_id,
-                attempt,
-                len(main_rs),
-                len(formatted),
-            )
-            main_rs = formatted
-        else:
-            LOGGER.warning(
-                "solve_problem format_skipped run_id=%s attempt=%s summary=%s",
-                run_id,
-                attempt,
-                summarize_tool_output("format_rust", formatted),
-            )
-
-        last_eval = eval_state.get("last", {})
-        if not last_eval:
-            tool_map["evaluate_rust"].invoke({"main_rs": main_rs})
-            last_eval = eval_state.get("last", {})
-
-        if last_eval.get("ok") is True:
-            LOGGER.info(
-                "solve_problem success run_id=%s attempt=%s summary=%s",
-                run_id,
-                attempt,
-                preview_text(last_eval, limit=240),
-            )
-            if not refactor_done:
-                main_rs = refactor_with_specialist(main_rs, problem_text, run_id)
-                refactor_done = True
-                eval_state.clear()
-                tool_map["evaluate_rust"].invoke({"main_rs": main_rs})
-                last_eval = eval_state.get("last", {})
-                if last_eval.get("ok") is True:
-                    refactor_repair_rs = None
-                    return SolveResult(
-                        main_rs=main_rs.rstrip() + "\n",
-                        last_eval=last_eval,
-                    )
-                feedback = build_repair_message(last_eval, main_rs, problem_text=problem_text)
-                refactor_repair_rs = main_rs
+            if response_text is None:
+                LOGGER.warning("attempt=%s model_generation_failed", attempt)
                 continue
-            return SolveResult(
-                main_rs=main_rs.rstrip() + "\n",
-                last_eval=last_eval,
+
+            code = extract_rust_code_block(response_text)
+            if code is None:
+                recorder.record_step(
+                    attempt=attempt,
+                    step_type="no_code",
+                    code="",
+                    eval_result=None,
+                    extra_context={"response_preview": preview_text(response_text, limit=500)},
+                )
+                repair_context = (
+                    "## Build/Test Results\n"
+                    "No Rust code block was generated in the previous attempt.\n\n"
+                    "## Repair Instructions\n"
+                    "- Output the complete src/main.rs in a single ```rust code fence.\n"
+                )
+                continue
+
+            recorder.record_step(
+                attempt=attempt,
+                step_type="generate",
+                code=code,
+                eval_result=None,
+                extra_context={"phase": "initial" if attempt == 1 else "repair"},
             )
 
-        feedback = build_repair_message(last_eval, main_rs, problem_text=problem_text)
-        LOGGER.warning(
-            "solve_problem attempt_failed run_id=%s attempt=%s feedback=%r",
-            run_id,
-            attempt,
-            preview_text(feedback, limit=400),
-        )
+            symbols = extract_windows_api_symbols(code)
+            rustdoc_info = ""
+            try:
+                rustdoc_info = batch_rustdoc_lookup(symbols, rustdocs_base, client)
+            except Exception as exc:
+                LOGGER.warning("attempt=%s rustdoc_lookup_unavailable error=%s", attempt, exc)
+                rustdoc_info = ""
 
-    LOGGER.error(
-        "solve_problem exhausted_attempts run_id=%s max_attempts=%s last_eval=%r",
-        run_id,
+            eval_result: Dict[str, Any] = {}
+            eval_error: Optional[Exception] = None
+            for eval_try in range(2):
+                try:
+                    eval_result = eval_server_evaluate(
+                        main_rs=code,
+                        unit_tests_private=unit_tests_private,
+                        fixed_deps=FIXED_DEPENDENCIES,
+                        eval_base=eval_base,
+                        client=client,
+                        run_tests=True,
+                    )
+                    eval_error = None
+                    break
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                    eval_error = exc
+                    LOGGER.warning("attempt=%s eval_retry=%s error=%s", attempt, eval_try + 1, exc)
+                except Exception as exc:
+                    eval_error = exc
+                    LOGGER.warning("attempt=%s eval_failed error=%s", attempt, exc)
+                    break
+
+            if eval_error is not None and not eval_result:
+                recorder.record_step(
+                    attempt=attempt,
+                    step_type="eval_error",
+                    code=code,
+                    eval_result=None,
+                    extra_context={"error": str(eval_error)},
+                )
+                repair_context = (
+                    "## Build/Test Results\n"
+                    f"Evaluator request failed: {eval_error}\n\n"
+                    "## Repair Instructions\n"
+                    "- Keep the same approach and output valid Rust in a single fence.\n"
+                )
+                continue
+
+            recorder.record_step(
+                attempt=attempt,
+                step_type="eval",
+                code=code,
+                eval_result=eval_result,
+                extra_context={"symbols": symbols, "rustdoc_info": rustdoc_info},
+            )
+
+            score = _error_score(eval_result)
+            if score < best_score:
+                best_score = score
+                best_code = code
+                best_eval = eval_result
+
+            if eval_result.get("ok") is True:
+                formatted = None
+                try:
+                    formatted = eval_server_format(code, eval_base, client)
+                except Exception as exc:
+                    LOGGER.warning("attempt=%s format_failed error=%s", attempt, exc)
+                    formatted = None
+
+                if formatted and formatted.strip() != code.strip():
+                    recorder.record_step(
+                        attempt=attempt,
+                        step_type="format",
+                        code=formatted,
+                        eval_result=None,
+                        extra_context={},
+                    )
+                    try:
+                        formatted_eval = eval_server_evaluate(
+                            main_rs=formatted,
+                            unit_tests_private=unit_tests_private,
+                            fixed_deps=FIXED_DEPENDENCIES,
+                            eval_base=eval_base,
+                            client=client,
+                            run_tests=True,
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("attempt=%s formatted_recheck_failed error=%s", attempt, exc)
+                        formatted_eval = None
+
+                    if isinstance(formatted_eval, dict) and formatted_eval.get("ok") is True:
+                        recorder.record_final(formatted, formatted_eval)
+                        return SolveResult(main_rs=formatted.rstrip() + "\n", last_eval=formatted_eval)
+
+                    recorder.record_final(code, eval_result)
+                    return SolveResult(main_rs=code.rstrip() + "\n", last_eval=eval_result)
+
+                recorder.record_final(code, eval_result)
+                return SolveResult(main_rs=code.rstrip() + "\n", last_eval=eval_result)
+
+            diagnostic_symbols = extract_symbols_from_diagnostics(eval_result)
+            targeted_info = ""
+            if diagnostic_symbols:
+                try:
+                    targeted_info = batch_rustdoc_lookup(diagnostic_symbols, rustdocs_base, client)
+                except Exception as exc:
+                    LOGGER.warning("attempt=%s targeted_lookup_failed error=%s", attempt, exc)
+
+            combined_info_parts = [part for part in [rustdoc_info, targeted_info] if part.strip()]
+            combined_info = "\n\n".join(combined_info_parts)
+            repair_context = build_repair_context(
+                eval_result=eval_result,
+                main_rs=code,
+                rustdoc_info=combined_info,
+                problem_text=problem_text,
+            )
+
+            if code.strip() == previous_code.strip():
+                same_streak += 1
+            else:
+                same_streak = 0
+            previous_code = code
+
+            if same_streak >= 2:
+                hint = _first_diagnostic_hint(eval_result)
+                repair_context += (
+                    "\n\nWARNING: Your previous repair attempt returned identical code. "
+                    "You MUST make a different change this time. Focus on: "
+                    f"{hint}"
+                )
+
+    if best_code.strip():
+        LOGGER.warning(
+            "solve_problem exhausted_attempts returning_best run_id=%s best_score=%s",
+            run_id,
+            best_score,
+        )
+        recorder.record_step(
+            attempt=max_attempts + 1,
+            step_type="best_effort",
+            code=best_code,
+            eval_result=best_eval,
+            extra_context={"best_score": best_score},
+        )
+        return SolveResult(main_rs=best_code.rstrip() + "\n", last_eval=best_eval)
+
+    raise RuntimeError(f"Failed to solve within {max_attempts} attempts and no valid code was produced.")
+
+
+def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool) -> None:
+    problems_dir = input_dir / "problems"
+    tests_dir = input_dir / "tests"
+    solutions_dir = input_dir / "solutions"
+
+    if not problems_dir.is_dir():
+        raise ValueError(f"Problems directory not found: {problems_dir}")
+    if not tests_dir.is_dir():
+        raise ValueError(f"Tests directory not found: {tests_dir}")
+
+    solutions_dir.mkdir(parents=True, exist_ok=True)
+
+    problem_files = sorted(problems_dir.glob("*.md"))
+    LOGGER.info(
+        "process_input_folder start input=%s count=%s max_attempts=%s overwrite=%s",
+        input_dir,
+        len(problem_files),
         max_attempts,
-        preview_text(last_eval, limit=400),
+        overwrite,
     )
-    raise RuntimeError(
-        f"Failed to solve within {max_attempts} attempts. "
-        f"Last eval:\n{summarize_eval(last_eval)}"
-    )
+
+    for md_path in problem_files:
+        problem_id = md_path.stem
+        test_path = tests_dir / f"{problem_id}.rs"
+        solution_out = solutions_dir / f"{problem_id}.rs"
+
+        if solution_out.exists() and not overwrite:
+            LOGGER.info("process_input_folder skip id=%s reason=exists", problem_id)
+            continue
+
+        if not test_path.exists():
+            LOGGER.warning("process_input_folder skip id=%s reason=missing_test", problem_id)
+            continue
+
+        problem_text = md_path.read_text(encoding="utf-8")
+        unit_tests_text = test_path.read_text(encoding="utf-8")
+
+        try:
+            result = solve_problem(
+                problem_text=problem_text,
+                unit_tests_private=unit_tests_text,
+                max_attempts=max_attempts,
+            )
+            solution_out.write_text(result.main_rs, encoding="utf-8")
+            LOGGER.info(
+                "process_input_folder ok id=%s eval_ok=%s",
+                problem_id,
+                result.last_eval.get("ok") is True,
+            )
+        except Exception as exc:
+            LOGGER.exception("process_input_folder failed id=%s error=%s", problem_id, exc)
+            continue
 
 
 if __name__ == "__main__":
     configure_logging()
-    problem_text_input = open(
-        "../dataset/winapi-eval/problems/9beb547d-0701-4af0-a8c1-f7e09e0e6beb.md",
-        "r",
-        encoding="utf-8",
-    ).read()
-    unit_tests_text_input = open(
-        "../dataset/winapi-eval/tests/9beb547d-0701-4af0-a8c1-f7e09e0e6beb.rs",
-        "r",
-        encoding="utf-8",
-    ).read()
+    parser = argparse.ArgumentParser(description="Batch verified solutions agent")
+    parser.add_argument(
+        "--input-dir",
+        required=True,
+        help="Directory containing problems/ and tests/ subdirectories. Solutions are written to solutions/ under this directory.",
+    )
+    parser.add_argument("--max-attempts", type=int, default=8)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Re-solve even if a solution already exists.",
+    )
+    args = parser.parse_args()
 
-    r = solve_problem(problem_text_input, unit_tests_text_input)
-    print(r)
-
-    out = open("../dataset/winapi-eval/solutions/9beb547d-0701-4af0-a8c1-f7e09e0e6beb.md")
-    out.write(r.main_rs)
+    process_input_folder(
+        input_dir=Path(args.input_dir),
+        max_attempts=args.max_attempts,
+        overwrite=args.overwrite,
+    )
