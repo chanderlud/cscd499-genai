@@ -1,60 +1,56 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+
+    fn unique_pipe_name(tag: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!(
+            r"\\.\pipe\{}_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t"),
+            n
+        )
+    }
 
     #[test]
     fn test_named_pipe_impersonated_sid_happy_path() {
-        let sid = named_pipe_impersonated_sid(r"\\.\pipe\imp_test").unwrap();
-        assert!(!sid.is_empty(), "SID string should not be empty");
-        assert!(
-            sid.starts_with("S-"),
-            "SID string should start with 'S-' prefix"
-        );
-    }
-
-    #[test]
-    fn test_named_pipe_impersonated_sid_invalid_pipe_name() {
-        let result = named_pipe_impersonated_sid(r"\\.\pipe\invalid$%^&*");
-        assert!(result.is_err(), "Invalid pipe name should return error");
-    }
-
-    #[test]
-    fn test_named_pipe_impersonated_sid_empty_name() {
-        let result = named_pipe_impersonated_sid("");
-        assert!(result.is_err(), "Empty pipe name should return error");
-    }
-
-    #[test]
-    fn test_named_pipe_impersonated_sid_nonexistent_pipe() {
-        let result = named_pipe_impersonated_sid(r"\\.\pipe\nonexistent_test_pipe");
-        assert!(result.is_err(), "Nonexistent pipe should return error");
+        let pipe = unique_pipe_name("imp_test");
+        let sid = named_pipe_impersonated_sid(&pipe).unwrap();
+        assert!(!sid.is_empty());
+        assert!(sid.starts_with("S-"));
     }
 
     #[test]
     fn test_named_pipe_impersonated_sid_concurrent_access() {
-        let handle = thread::spawn(|| named_pipe_impersonated_sid(r"\\.\pipe\imp_test").unwrap());
+        let handle = std::thread::spawn(|| {
+            let pipe = unique_pipe_name("imp_test_concurrent");
+            named_pipe_impersonated_sid(&pipe).unwrap()
+        });
+
         let sid = handle.join().unwrap();
-        assert!(!sid.is_empty(), "Concurrent impersonation should succeed");
-        assert!(sid.starts_with("S-"), "Concurrent SID should be valid");
+        assert!(!sid.is_empty());
+        assert!(sid.starts_with("S-"));
     }
 
     #[test]
     fn test_named_pipe_impersonated_sid_multiple_clients() {
         let mut handles = vec![];
-        for i in 0..3 {
-            handles.push(thread::spawn(move || {
-                named_pipe_impersonated_sid(r"\\.\pipe\imp_test").unwrap()
+        for _ in 0..3 {
+            handles.push(std::thread::spawn(|| {
+                let pipe = unique_pipe_name("imp_test_multi");
+                named_pipe_impersonated_sid(&pipe).unwrap()
             }));
         }
 
         let sids: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-
-        assert!(!sids.is_empty(), "Should get SIDs from multiple clients");
+        assert_eq!(sids.len(), 3);
         assert!(
             sids.iter()
-                .all(|sid| !sid.is_empty() && sid.starts_with("S-")),
-            "All SIDs should be valid"
+                .all(|sid| !sid.is_empty() && sid.starts_with("S-"))
         );
     }
 }

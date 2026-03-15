@@ -2,133 +2,118 @@
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::path::PathBuf;
+    use windows::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION,
+        ERROR_UNABLE_TO_REMOVE_REPLACED,
+    };
+
+    fn test_paths() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        (dir, src, dst)
+    }
 
     #[test]
     fn test_replace_file_happy_path() {
-        let src = std::env::temp_dir().join("src.txt");
-        let dst = std::env::temp_dir().join("dst.txt");
+        let (_dir, src, dst) = test_paths();
 
-        // Setup: create source and destination files
         fs::write(&src, "source content").unwrap();
         fs::write(&dst, "destination content").unwrap();
 
-        // Act: replace destination with source
         replace_file(&src, &dst).unwrap();
 
-        // Assert: destination now has source content
         let dst_content = fs::read_to_string(&dst).unwrap();
         assert_eq!(dst_content, "source content");
-
-        // Cleanup
-        fs::remove_file(&src).unwrap();
-        fs::remove_file(&dst).unwrap();
+        assert!(!src.exists(), "source path should be consumed by replace");
     }
 
     #[test]
     fn test_replace_file_dst_not_exist() {
-        let src = std::env::temp_dir().join("src.txt");
-        let dst = std::env::temp_dir().join("dst.txt");
+        let (_dir, src, dst) = test_paths();
 
-        // Setup: create source only
         fs::write(&src, "source content").unwrap();
 
-        // Act: replace non-existent destination
         replace_file(&src, &dst).unwrap();
 
-        // Assert: destination now exists with source content
         let dst_content = fs::read_to_string(&dst).unwrap();
         assert_eq!(dst_content, "source content");
-
-        // Cleanup
-        fs::remove_file(&src).unwrap();
-        fs::remove_file(&dst).unwrap();
+        assert!(!src.exists(), "source path should be moved to destination");
     }
 
     #[test]
     fn test_replace_file_empty_files() {
-        let src = std::env::temp_dir().join("src.txt");
-        let dst = std::env::temp_dir().join("dst.txt");
+        let (_dir, src, dst) = test_paths();
 
-        // Setup: create empty source and destination
         fs::File::create(&src).unwrap();
         fs::File::create(&dst).unwrap();
 
-        // Act
         replace_file(&src, &dst).unwrap();
 
-        // Assert: both files are empty
-        let src_size = fs::metadata(&src).unwrap().len();
         let dst_size = fs::metadata(&dst).unwrap().len();
-        assert_eq!(src_size, 0);
         assert_eq!(dst_size, 0);
-
-        // Cleanup
-        fs::remove_file(&src).unwrap();
-        fs::remove_file(&dst).unwrap();
+        assert!(!src.exists(), "source path should be consumed by replace");
     }
 
     #[test]
     fn test_replace_file_same_file() {
-        let path = std::env::temp_dir().join("same.txt");
+        let (_dir, path_src, _) = test_paths();
+        let path = path_src;
 
-        // Setup: create file with content
         fs::write(&path, "content").unwrap();
 
-        // Act: replace with itself
         replace_file(&path, &path).unwrap();
 
-        // Assert: content unchanged
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(content, "content");
-
-        // Cleanup
-        fs::remove_file(&path).unwrap();
     }
 
     #[test]
     fn test_replace_file_src_not_exist() {
-        let src = std::env::temp_dir().join("missing_src.txt");
-        let dst = std::env::temp_dir().join("dst.txt");
+        let (_dir, src, dst) = test_paths();
 
-        // Setup: create destination only
         fs::write(&dst, "destination content").unwrap();
 
-        // Act: try to replace with non-existent source
         let err = replace_file(&src, &dst).unwrap_err();
+        let code = super::win32_code(&err);
 
-        // Assert: should return an error
-        assert!(err.to_string().contains("NotFound") || err.to_string().contains("failed"));
+        assert!(
+            code == ERROR_FILE_NOT_FOUND.0 || code == ERROR_PATH_NOT_FOUND.0,
+            "unexpected error: {err:?}"
+        );
 
-        // Cleanup
-        fs::remove_file(&dst).unwrap();
+        let dst_content = fs::read_to_string(&dst).unwrap();
+        assert_eq!(dst_content, "destination content");
     }
 
     #[test]
-    fn test_replace_file_permissions_error() {
-        let src = std::env::temp_dir().join("src.txt");
-        let dst = std::env::temp_dir().join("dst.txt");
+    fn test_replace_file_dst_locked() {
+        let (_dir, src, dst) = test_paths();
 
-        // Setup: create source and destination
         fs::write(&src, "source content").unwrap();
         fs::write(&dst, "destination content").unwrap();
 
-        // Make destination read-only
-        let mut perms = fs::metadata(&dst).unwrap().permissions();
-        perms.set_readonly(true);
-        fs::set_permissions(&dst, perms).unwrap();
+        let err = {
+            let _lock = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(&dst)
+                .unwrap();
 
-        // Act: attempt replace (should fail due to permissions)
-        let err = replace_file(&src, &dst).unwrap_err();
+            replace_file(&src, &dst).unwrap_err()
+        }; // lock drops here
 
-        // Assert: should return an error
-        assert!(err.to_string().contains("permission") || err.to_string().contains("failed"));
+        let code = super::win32_code(&err);
 
-        // Cleanup: restore permissions and remove files
-        let mut perms = fs::metadata(&dst).unwrap().permissions();
-        perms.set_readonly(false);
-        fs::set_permissions(&dst, perms).unwrap();
-        fs::remove_file(&src).unwrap();
-        fs::remove_file(&dst).unwrap();
+        assert!(
+            code == ERROR_SHARING_VIOLATION.0 || code == ERROR_UNABLE_TO_REMOVE_REPLACED.0,
+            "unexpected error: {err:?}"
+        );
+
+        assert_eq!(fs::read_to_string(&src).unwrap(), "source content");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "destination content");
     }
 }

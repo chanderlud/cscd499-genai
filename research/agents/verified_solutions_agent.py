@@ -65,7 +65,7 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
 
 Quality rules:
 - Use `?` operator for Result-returning calls.
-- After a failing non-`Result` Win32 call, call `windows::core::Error::from_win32()` — no argument — to capture `GetLastError()` as a `windows::core::Error`.
+- After a failing non-`Result` Win32 call, call `windows::core::Error::from_thread()` — no argument — to capture `GetLastError()` as a `windows::core::Error`.
 - To convert a raw `u32` error code to an `HRESULT`, call `HRESULT::from_win32(code)` — one `u32` argument. Never call `Error::from_win32(code)` with an argument; that method does not exist.
 - Do not try to use the `?` operator with HRESULT, instead convert to `windows::core::Error` with windows::core::Error::from_hresult(hresult), then use `?`.
 - Minimize `unsafe` blocks; justify each with a comment.
@@ -109,7 +109,7 @@ Key rules:
 // ❌ WRONG — Error has no from_win32(code) method:
 //   windows::core::Error::from_win32(code)
 //
-// ✅ CORRECT — use HRESULT::from_win32 for a code, Error::from_win32() for GetLastError:
+// ✅ CORRECT — use HRESULT::from_win32 for a code, Error::from_thread() for GetLastError:
 //   HRESULT::from_win32(code)          // takes a u32 argument
 //   windows::core::Error::from_hresult(hresult) // takes a HRESULT argument
 //   windows::core::Error::from_thread() // zero arguments — reads GetLastError()
@@ -119,6 +119,15 @@ Key rules:
 Use this after a failing non-`Result` Win32 call:
 - `windows::core::Error::from_win32()` takes **no arguments**.
 - It captures the current thread's `GetLastError()` value as a `windows::core::Error`.
+
+## Win32 Threading Rules
+- Do NOT add `unsafe impl Send` or `unsafe impl Sync` to any struct that wraps a `HANDLE`, raw pointer, or COM interface. This is unsound.
+- Explicitly forbid `unsafe impl Send` / `unsafe impl Sync` on any wrapper that holds a `HANDLE` or raw pointer.
+- Approved strategies (use in this priority order):
+  1. **Create the HANDLE inside the thread closure**: The handle is only needed on the worker thread - open/create it there, use it, and close it before the closure returns.
+  2. **Pass the raw integer value across the thread boundary**: Extract the handle as `isize` (via `.0`) before `thread::spawn`, move the integer into the closure, and reconstruct the typed handle inside the closure with `HANDLE(raw)`.
+  3. **Use a channel to send work descriptions, not handles**: Send file paths, IDs, or other `Send` data to the thread; let the thread open its own handle.
+  4. **Use `std::thread::scope`**: When the thread must not outlive the current stack frame, a scoped thread can borrow non-`Send` data safely.
 """
 
 REPAIR_PROMPT_TEMPLATE = """Your previous code attempt failed to compile/pass tests. Fix ONLY the reported errors.
@@ -131,8 +140,13 @@ Windows repair reminders:
 - To wrap a raw `u32` code as an `HRESULT`, use `HRESULT::from_win32(code)` (one argument) or `err.to_hresult()` for a `WIN32_ERROR` value.
 - To capture `GetLastError()` as a `windows::core::Error`, use `windows::core::Error::from_thread()` with no argument. `Error::from_win32` does not accept a `u32` argument — that overload does not exist.
 - Prefer W-suffix Win32 APIs and minimize `unsafe` scope.
-- When you encounter the error "`*mut c_void` cannot be sent between threads safely" you must refactor the code so that no non-send variables are captured by the thread closure.
-- thread::spawn only accepts closures whose captured values are Send. If a Windows or COM wrapper type is !Send, you cannot move it directly into the thread.
+- If diagnostics contain "cannot be sent between threads safely" or "the trait Send is not implemented", this is a thread-safety capture issue.
+- Do NOT introduce `unsafe impl Send` / `unsafe impl Sync`. That is unsound and will not be accepted.
+- Refactor using one of these strategies (in order):
+  1. **Create the HANDLE inside the thread closure**: if only the worker needs it, open/create there, use it, close before return.
+  2. **Pass a raw integer value across the boundary**: extract handle `.0` as `isize` before `thread::spawn`, move that integer, reconstruct typed `HANDLE(raw)` inside the closure.
+  3. **Send work descriptions via channel instead of handles**: pass paths/IDs/other `Send` data, and open the handle on the worker.
+  4. **Use `std::thread::scope`**: when the thread does not outlive the current frame, use scoped threads to borrow safely.
 
 Output the complete fixed src/main.rs in a single ```rust code fence.
 """
@@ -142,6 +156,7 @@ Output the complete fixed src/main.rs in a single ```rust code fence.
 class SolveResult:
     main_rs: str
     last_eval: Dict[str, Any]
+    verified: bool = True
 
 
 def _error_score(eval_result: Dict[str, Any]) -> int:
@@ -436,7 +451,7 @@ def solve_problem(
             eval_result=best_eval,
             extra_context={"best_score": best_score},
         )
-        return SolveResult(main_rs=best_code.rstrip() + "\n", last_eval=best_eval)
+        return SolveResult(main_rs=best_code.rstrip() + "\n", last_eval=best_eval, verified=False)
 
     raise RuntimeError(f"Failed to solve within {max_attempts} attempts and no valid code was produced.")
 
@@ -488,12 +503,20 @@ def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool, re
                 problem_id=problem_id,
                 resume=resume,
             )
-            solution_out.write_text(result.main_rs, encoding="utf-8")
-            LOGGER.info(
-                "process_input_folder ok id=%s eval_ok=%s",
-                problem_id,
-                result.last_eval.get("ok") is True,
-            )
+            if result.verified:
+                solution_out.write_text(result.main_rs, encoding="utf-8")
+                LOGGER.info(
+                    "process_input_folder ok id=%s eval_ok=%s",
+                    problem_id,
+                    result.last_eval.get("ok") is True,
+                )
+            else:
+                LOGGER.warning(
+                    "process_input_folder best_effort_skipped id=%s best_score=%s steps_dir=out/steps/%s",
+                    problem_id,
+                    result.last_eval,
+                    problem_id,
+                )
         except Exception as exc:
             LOGGER.exception("process_input_folder failed id=%s error=%s", problem_id, exc)
             continue

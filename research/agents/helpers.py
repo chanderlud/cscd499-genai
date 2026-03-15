@@ -25,6 +25,12 @@ IGNORABLE_UNUSED_CODES = frozenset({
     "unused_mut",
     "unused_assignments",
 })
+THREAD_SEND_TRIGGERS = (
+    "cannot be sent between threads safely",
+    "the trait `Send` is not implemented",
+    "is not `Send`",
+    "`Send` is not implemented",
+)
 
 
 class FinalAnswerException(Exception):
@@ -1097,6 +1103,21 @@ def build_repair_context(
             "and reads `GetLastError()`. If you need to convert a `u32` code, use `HRESULT::from_win32(code)` "
             "instead. Do not call `Error::from_win32(code)`."
         )
+    thread_send_hint = ""
+    if any(trigger in diagnostics for trigger in THREAD_SEND_TRIGGERS):
+        thread_send_hint = (
+            "\n\n"
+            "**Thread-safety error detected:** A Windows `HANDLE` or raw-pointer wrapper is being moved into a thread "
+            "but is `!Send`. Do NOT add `unsafe impl Send`.\n"
+            "1. **Create the HANDLE inside the thread closure**: if only the worker needs it, open/create there, use it, "
+            "and close it before return.\n"
+            "2. **Pass the raw integer value across the thread boundary**: extract handle `.0` as `isize` before "
+            "`thread::spawn`, move the integer into the closure, and reconstruct typed `HANDLE(raw)` inside the closure.\n"
+            "3. **Use a channel to send work descriptions, not handles**: send file paths, IDs, or other `Send` data; "
+            "let the thread open its own handle.\n"
+            "4. **Use `std::thread::scope`**: when the thread must not outlive the current stack frame, use a scoped "
+            "thread so borrowing is safe."
+        )
 
     return (
         "## Previous Code\n"
@@ -1113,6 +1134,7 @@ def build_repair_context(
         "- Do not change the overall approach, only fix the specific errors\n"
         "- Output the complete fixed src/main.rs in a single ```rust code fence\n"
         f"{from_win32_confusion_hint}"
+        f"{thread_send_hint}"
     )
 
 

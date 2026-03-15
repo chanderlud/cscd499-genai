@@ -64,7 +64,7 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
 
 Quality rules:
 - Use `?` operator for Result-returning calls.
-- After a failing non-`Result` Win32 call, call `windows::core::Error::from_win32()` - no argument - to capture `GetLastError()` as a `windows::core::Error`.
+- After a failing non-`Result` Win32 call, call `windows::core::Error::from_thread()` - no argument - to capture `GetLastError()` as a `windows::core::Error`.
 - To convert a raw `u32` error code to an `HRESULT`, call `HRESULT::from_win32(code)` - one `u32` argument. Never call `Error::from_win32(code)` with an argument; that method does not exist.
 - Minimize `unsafe` blocks; justify each with a comment.
 - The snippet must compile and pass clippy with no warnings (deny(warnings) is enforced).
@@ -107,7 +107,7 @@ Key rules:
 // WRONG - Error has no from_win32(code) method:
 //   windows::core::Error::from_win32(code)
 //
-// CORRECT - use HRESULT::from_win32 for a code, Error::from_win32() for GetLastError:
+// CORRECT - use HRESULT::from_win32 for a code, Error::from_thread() for GetLastError:
 //   HRESULT::from_win32(code)          // takes a u32 argument
 //   windows::core::Error::from_hresult(hresult) // takes a HRESULT argument
 //   windows::core::Error::from_thread() // zero arguments - reads GetLastError()
