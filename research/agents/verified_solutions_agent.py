@@ -59,14 +59,48 @@ Available crates:
 Useful helper pattern:
 ```rust
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{iter::once, os::windows::ffi::OsStrExt};
+    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(once(0)).collect()
 }
 ```
 
-Error handling hints:
-- For APIs that return `BOOL`, check `as_bool()` and return `Error::from_win32()` on failure.
-- For APIs that return handles/pointers/sentinels, validate against invalid values and convert OS errors appropriately.
+Quality rules:
+- Use `?` operator for Result-returning calls.
+- For non-Result Win32 calls, check the return value and call `GetLastError` / `windows::core::Error::from_win32()`.
+- Minimize `unsafe` blocks; justify each with a comment.
+- The snippet must compile and pass clippy with no warnings (deny(warnings) is enforced).
+
+## HRESULT / WIN32_ERROR Error-Handling Reference
+
+When a Win32 API returns a raw `u32` error code or a `WIN32_ERROR` value and you need
+an `HRESULT`, use the following patterns (do NOT construct HRESULT literals manually):
+
+```rust
+use windows::core::HRESULT;
+use windows::Win32::Foundation::{WIN32_ERROR, ERROR_ACCESS_DENIED};
+
+// From a raw u32 code (e.g. returned by GetLastError as a u32):
+fn from_raw_code(code: u32) -> HRESULT {
+    HRESULT::from_win32(code)
+}
+
+// From a WIN32_ERROR value:
+fn from_win32_error(err: WIN32_ERROR) -> HRESULT {
+    err.to_hresult()
+    // equivalent: HRESULT::from(err)
+}
+
+// Inline example — converting a known constant:
+fn example() -> HRESULT {
+    HRESULT::from_win32(ERROR_ACCESS_DENIED.0)
+}
+```
+
+Key rules derived from the above:
+- `WIN32_ERROR` has a `.0` field (the raw `u32`); pass it to `HRESULT::from_win32()` when you need the raw value.
+- Prefer `err.to_hresult()` over `.0` when you already hold a `WIN32_ERROR` — it is more idiomatic.
+- Never hard-code `HRESULT(0x80070005_u32 as i32)` or similar literals.
+- `windows::core::Error::from_win32()` (no argument) reads `GetLastError()` automatically; use it after a failing non-`Result` call.
 """
 
 REPAIR_PROMPT_TEMPLATE = """Your previous code attempt failed to compile/pass tests. Fix ONLY the reported errors.
@@ -74,6 +108,11 @@ Use the Rustdoc symbol resolution below to correct any import paths.
 Do NOT rewrite from scratch - make targeted fixes.
 
 {context}
+
+Windows repair reminders:
+- Use `HRESULT::from_win32(code)` or `err.to_hresult()` when mapping Win32 errors to HRESULT; never hard-code HRESULT literals.
+- After a failing non-`Result` Win32 call, use `windows::core::Error::from_win32()` (no argument).
+- Prefer W-suffix Win32 APIs and minimize `unsafe` scope.
 
 Output the complete fixed src/main.rs in a single ```rust code fence.
 """
