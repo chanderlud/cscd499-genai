@@ -67,6 +67,7 @@ Quality rules:
 - Use `?` operator for Result-returning calls.
 - After a failing non-`Result` Win32 call, call `windows::core::Error::from_win32()` — no argument — to capture `GetLastError()` as a `windows::core::Error`.
 - To convert a raw `u32` error code to an `HRESULT`, call `HRESULT::from_win32(code)` — one `u32` argument. Never call `Error::from_win32(code)` with an argument; that method does not exist.
+- Do not try to use the `?` operator with HRESULT, instead convert to `windows::core::Error` with windows::core::Error::from_hresult(hresult), then use `?`.
 - Minimize `unsafe` blocks; justify each with a comment.
 - The snippet must compile and pass clippy with no warnings (deny(warnings) is enforced).
 
@@ -130,6 +131,8 @@ Windows repair reminders:
 - To wrap a raw `u32` code as an `HRESULT`, use `HRESULT::from_win32(code)` (one argument) or `err.to_hresult()` for a `WIN32_ERROR` value.
 - To capture `GetLastError()` as a `windows::core::Error`, use `windows::core::Error::from_thread()` with no argument. `Error::from_win32` does not accept a `u32` argument — that overload does not exist.
 - Prefer W-suffix Win32 APIs and minimize `unsafe` scope.
+- When you encounter the error "`*mut c_void` cannot be sent between threads safely" you must refactor the code so that no non-send variables are captured by the thread closure.
+- thread::spawn only accepts closures whose captured values are Send. If a Windows or COM wrapper type is !Send, you cannot move it directly into the thread.
 
 Output the complete fixed src/main.rs in a single ```rust code fence.
 """
