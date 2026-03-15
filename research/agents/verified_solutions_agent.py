@@ -20,6 +20,7 @@ from helpers import (
     extract_rust_code_block,
     extract_symbols_from_diagnostics,
     extract_windows_api_symbols,
+    load_resume_state,
     openrouter_generate_code,
     preview_text,
 )
@@ -132,11 +133,13 @@ def solve_problem(
     unit_tests_private: str,
     max_attempts: int = 8,
     output_dir: Optional[Path] = None,
+    problem_id: Optional[str] = None,
+    resume: bool = False,
 ) -> SolveResult:
     run_id = uuid.uuid4().hex[:8]
     eval_base = env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
     rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
-    recorder = StepRecorder(run_id=run_id, output_dir=output_dir)
+    recorder = StepRecorder(run_id=run_id, output_dir=output_dir, problem_id=problem_id)
 
     LOGGER.info(
         "solve_problem start run_id=%s attempts=%s problem_len=%s tests_len=%s",
@@ -152,11 +155,38 @@ def solve_problem(
     previous_code = ""
     same_streak = 0
     repair_context = ""
+    start_attempt = 1
+
+    if resume and problem_id:
+        base = output_dir or Path("out")
+        steps_dir = base / "steps" / problem_id
+        resume_state = load_resume_state(steps_dir)
+        if resume_state:
+            start_attempt = int(resume_state["start_attempt"])
+            resumed_code = resume_state["last_code"]
+            resumed_eval = resume_state["last_eval"]
+            best_code = resumed_code
+            previous_code = resumed_code
+            if isinstance(resumed_eval, dict):
+                best_eval = resumed_eval
+                best_score = _error_score(resumed_eval)
+                repair_context = build_repair_context(
+                    eval_result=resumed_eval,
+                    main_rs=resumed_code,
+                    rustdoc_info="",
+                    problem_text=problem_text,
+                )
+            LOGGER.info(
+                "solve_problem resume_detected run_id=%s problem_id=%s start_attempt=%s",
+                run_id,
+                problem_id,
+                start_attempt,
+            )
 
     with httpx.Client(timeout=120.0) as client:
         eval_server_warmup(eval_base, client)
 
-        for attempt in range(1, max_attempts + 1):
+        for attempt in range(start_attempt, max_attempts + 1):
             user_prompt = problem_text if attempt == 1 else REPAIR_PROMPT_TEMPLATE.format(context=repair_context)
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -352,10 +382,11 @@ def solve_problem(
     raise RuntimeError(f"Failed to solve within {max_attempts} attempts and no valid code was produced.")
 
 
-def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool) -> None:
+def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool, resume: bool = False) -> None:
     problems_dir = input_dir / "problems"
     tests_dir = input_dir / "tests"
     solutions_dir = input_dir / "solutions"
+    output_dir = Path("out")
 
     if not problems_dir.is_dir():
         raise ValueError(f"Problems directory not found: {problems_dir}")
@@ -394,6 +425,9 @@ def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool) ->
                 problem_text=problem_text,
                 unit_tests_private=unit_tests_text,
                 max_attempts=max_attempts,
+                output_dir=output_dir,
+                problem_id=problem_id,
+                resume=resume,
             )
             solution_out.write_text(result.main_rs, encoding="utf-8")
             LOGGER.info(
@@ -420,10 +454,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Re-solve even if a solution already exists.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from last saved step for each problem.",
+    )
     args = parser.parse_args()
 
     process_input_folder(
         input_dir=Path(args.input_dir),
         max_attempts=args.max_attempts,
         overwrite=args.overwrite,
+        resume=args.resume,
     )

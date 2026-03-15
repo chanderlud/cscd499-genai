@@ -715,6 +715,7 @@ def code_help_tool(prompt: str, run_id: str) -> str:
     read_timeout_s = int(os.getenv("OPENROUTER_READ_TIMEOUT", "600"))
     timeout = httpx.Timeout(connect=10.0, read=float(read_timeout_s), write=30.0, pool=10.0)
 
+    started = time.perf_counter()
     try:
         with httpx.Client(timeout=timeout) as client:
             r = client.post(
@@ -732,18 +733,92 @@ def code_help_tool(prompt: str, run_id: str) -> str:
             )
             r.raise_for_status()
             data = r.json()
-            choices = data.get("choices") or []
-            if choices and isinstance(choices[0], dict):
-                msg = choices[0].get("message") or {}
-                content = msg.get("content")
-                if isinstance(content, str):
-                    return content
-            LOGGER.warning(
-                "review_code_with_openrouter unexpected response run_id=%s keys=%s",
+            if not isinstance(data, dict):
+                LOGGER.warning(
+                    "review_code_with_openrouter unexpected response type=%s run_id=%s",
+                    type(data).__name__,
+                    run_id,
+                )
+                return ""
+
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                LOGGER.warning(
+                    "review_code_with_openrouter missing or empty choices run_id=%s keys=%s",
+                    run_id,
+                    list(data.keys()),
+                )
+                return ""
+
+            first = choices[0]
+            if not isinstance(first, dict):
+                LOGGER.warning(
+                    "review_code_with_openrouter malformed choice[0] run_id=%s type=%s",
+                    run_id,
+                    type(first).__name__,
+                )
+                return ""
+
+            finish_reason = first.get("finish_reason")
+            msg = first.get("message")
+            if not isinstance(msg, dict):
+                if finish_reason == "content_filter":
+                    LOGGER.warning(
+                        "review_code_with_openrouter content filtered run_id=%s finish_reason=%s",
+                        run_id,
+                        finish_reason,
+                    )
+                elif finish_reason == "stop":
+                    LOGGER.warning(
+                        "review_code_with_openrouter stop without message run_id=%s finish_reason=%s",
+                        run_id,
+                        finish_reason,
+                    )
+                else:
+                    LOGGER.warning(
+                        "review_code_with_openrouter malformed message run_id=%s type=%s finish_reason=%s",
+                        run_id,
+                        type(msg).__name__,
+                        finish_reason,
+                    )
+                return ""
+
+            content = msg.get("content")
+            if content is None:
+                LOGGER.warning(
+                    "review_code_with_openrouter null content run_id=%s finish_reason=%s",
+                    run_id,
+                    finish_reason,
+                )
+                return ""
+            if not isinstance(content, str):
+                LOGGER.warning(
+                    "review_code_with_openrouter non-string content run_id=%s type=%s finish_reason=%s",
+                    run_id,
+                    type(content).__name__,
+                    finish_reason,
+                )
+                return ""
+            if content == "":
+                LOGGER.warning(
+                    "review_code_with_openrouter empty content string run_id=%s finish_reason=%s",
+                    run_id,
+                    finish_reason,
+                )
+                return ""
+
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.info(
+                "review_code_with_openrouter ok run_id=%s duration_ms=%s finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
                 run_id,
-                list(data.keys()) if isinstance(data, dict) else "n/a",
+                duration_ms,
+                finish_reason,
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+                usage.get("total_tokens"),
             )
-            return ""
+            return content
     except Exception as e:
         LOGGER.warning(
             "review_code_with_openrouter failed run_id=%s error=%s: %s",
@@ -1069,10 +1144,10 @@ def extract_symbols_from_diagnostics(eval_result: Dict[str, Any]) -> List[str]:
 
 
 class StepRecorder:
-    def __init__(self, run_id: str, output_dir: Optional[Path] = None):
+    def __init__(self, run_id: str, output_dir: Optional[Path] = None, problem_id: Optional[str] = None):
         self.run_id = run_id
         base = output_dir or Path("out")
-        self.steps_dir = base / "steps" / run_id
+        self.steps_dir = base / "steps" / (problem_id if problem_id else run_id)
         self.steps_dir.mkdir(parents=True, exist_ok=True)
 
     def record_step(
@@ -1113,6 +1188,47 @@ class StepRecorder:
             eval_result=eval_result,
             extra_context={"final": True},
         )
+
+
+def load_resume_state(steps_dir: Path) -> Optional[Dict[str, Any]]:
+    if not steps_dir.exists() or not steps_dir.is_dir():
+        return None
+
+    candidates: list[Dict[str, Any]] = []
+    for step_path in steps_dir.glob("step_*.json"):
+        try:
+            payload = json.loads(step_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        attempt = payload.get("attempt")
+        if not isinstance(attempt, int) or attempt <= 0:
+            continue
+
+        code = payload.get("code")
+        if not isinstance(code, str):
+            code = ""
+
+        candidates.append(
+            {
+                "attempt": attempt,
+                "code": code,
+                "eval_result": payload.get("eval_result"),
+            }
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: int(item["attempt"]), reverse=True)
+    latest = candidates[0]
+    return {
+        "start_attempt": int(latest["attempt"]) + 1,
+        "last_code": latest["code"],
+        "last_eval": latest["eval_result"],
+    }
 
 def build_tools(unit_tests_private: str, fixed_dependencies: str, _eval_state: Optional[dict] = None, run_tests: bool = True):
     eval_state = _eval_state if _eval_state is not None else {}
