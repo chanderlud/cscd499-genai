@@ -712,9 +712,11 @@ def code_help_tool(prompt: str, run_id: str) -> str:
 
     base_url = env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     model = env("OPENROUTER_REVIEW_MODEL", "openrouter/hunter-alpha")
+    read_timeout_s = int(os.getenv("OPENROUTER_READ_TIMEOUT", "600"))
+    timeout = httpx.Timeout(connect=10.0, read=float(read_timeout_s), write=30.0, pool=10.0)
 
     try:
-        with httpx.Client(timeout=220.0) as client:
+        with httpx.Client(timeout=timeout) as client:
             r = client.post(
                 f"{base_url}/chat/completions",
                 headers={
@@ -767,10 +769,26 @@ def openrouter_generate_code(messages: List[Dict[str, str]]) -> Optional[str]:
     )
     max_tokens = int(os.getenv("OPENROUTER_MAX_TOKENS", "4096"))
     temperature = float(os.getenv("OPENROUTER_TEMPERATURE", "0.2"))
+    read_timeout_s = int(os.getenv("OPENROUTER_READ_TIMEOUT", "600"))
+    timeout = httpx.Timeout(connect=10.0, read=float(read_timeout_s), write=30.0, pool=10.0)
+    prompt_chars = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            prompt_chars += len(content)
 
     started = time.perf_counter()
+    LOGGER.info(
+        "openrouter_generate_code request_start model=%s messages=%s prompt_chars=%s read_timeout_s=%s",
+        model,
+        len(messages),
+        prompt_chars,
+        read_timeout_s,
+    )
     try:
-        with httpx.Client(timeout=300.0) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 f"{base_url}/chat/completions",
                 headers={
