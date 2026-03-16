@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import os
 import uuid
 from dataclasses import dataclass
@@ -456,7 +457,13 @@ def solve_problem(
     raise RuntimeError(f"Failed to solve within {max_attempts} attempts and no valid code was produced.")
 
 
-def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool, resume: bool = False) -> None:
+def process_input_folder(
+    input_dir: Path,
+    max_attempts: int,
+    overwrite: bool,
+    resume: bool = False,
+    workers: int = 5,
+) -> None:
     problems_dir = input_dir / "problems"
     tests_dir = input_dir / "tests"
     solutions_dir = input_dir / "solutions"
@@ -478,24 +485,25 @@ def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool, re
         overwrite,
     )
 
-    for md_path in problem_files:
-        problem_id = md_path.stem
-        test_path = tests_dir / f"{problem_id}.rs"
-        solution_out = solutions_dir / f"{problem_id}.rs"
+    futures: Dict[concurrent.futures.Future[SolveResult], tuple[str, Path]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        for md_path in problem_files:
+            problem_id = md_path.stem
+            test_path = tests_dir / f"{problem_id}.rs"
+            solution_out = solutions_dir / f"{problem_id}.rs"
 
-        if solution_out.exists() and not overwrite:
-            LOGGER.info("process_input_folder skip id=%s reason=exists", problem_id)
-            continue
+            if solution_out.exists() and not overwrite:
+                LOGGER.info("process_input_folder skip id=%s reason=exists", problem_id)
+                continue
 
-        if not test_path.exists():
-            LOGGER.warning("process_input_folder skip id=%s reason=missing_test", problem_id)
-            continue
+            if not test_path.exists():
+                LOGGER.warning("process_input_folder skip id=%s reason=missing_test", problem_id)
+                continue
 
-        problem_text = md_path.read_text(encoding="utf-8")
-        unit_tests_text = test_path.read_text(encoding="utf-8")
-
-        try:
-            result = solve_problem(
+            problem_text = md_path.read_text(encoding="utf-8")
+            unit_tests_text = test_path.read_text(encoding="utf-8")
+            future = executor.submit(
+                solve_problem,
                 problem_text=problem_text,
                 unit_tests_private=unit_tests_text,
                 max_attempts=max_attempts,
@@ -503,23 +511,29 @@ def process_input_folder(input_dir: Path, max_attempts: int, overwrite: bool, re
                 problem_id=problem_id,
                 resume=resume,
             )
-            if result.verified:
-                solution_out.write_text(result.main_rs, encoding="utf-8")
-                LOGGER.info(
-                    "process_input_folder ok id=%s eval_ok=%s",
-                    problem_id,
-                    result.last_eval.get("ok") is True,
-                )
-            else:
-                LOGGER.warning(
-                    "process_input_folder best_effort_skipped id=%s best_score=%s steps_dir=out/steps/%s",
-                    problem_id,
-                    result.last_eval,
-                    problem_id,
-                )
-        except Exception as exc:
-            LOGGER.exception("process_input_folder failed id=%s error=%s", problem_id, exc)
-            continue
+            futures[future] = (problem_id, solution_out)
+
+        for future in concurrent.futures.as_completed(futures):
+            problem_id, solution_out = futures[future]
+            try:
+                result = future.result()
+                if result.verified:
+                    solution_out.write_text(result.main_rs, encoding="utf-8")
+                    LOGGER.info(
+                        "process_input_folder ok id=%s eval_ok=%s",
+                        problem_id,
+                        result.last_eval.get("ok") is True,
+                    )
+                else:
+                    LOGGER.warning(
+                        "process_input_folder best_effort_skipped id=%s best_score=%s steps_dir=out/steps/%s",
+                        problem_id,
+                        result.last_eval,
+                        problem_id,
+                    )
+            except Exception as exc:
+                LOGGER.exception("process_input_folder failed id=%s error=%s", problem_id, exc)
+                continue
 
 
 if __name__ == "__main__":
@@ -541,6 +555,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Resume from last saved step for each problem.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=5,
+        help="Maximum number of concurrent problem-solving workers.",
+    )
     args = parser.parse_args()
 
     process_input_folder(
@@ -548,4 +568,5 @@ if __name__ == "__main__":
         max_attempts=args.max_attempts,
         overwrite=args.overwrite,
         resume=args.resume,
+        workers=args.workers,
     )

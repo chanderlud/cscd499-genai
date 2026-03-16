@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence, Mapping, List
 import httpx
 import time
+import threading
 
 from langchain_core.messages import HumanMessage, ToolMessage, trim_messages
 from langchain_ollama import ChatOllama
@@ -31,6 +32,24 @@ THREAD_SEND_TRIGGERS = (
     "is not `Send`",
     "`Send` is not implemented",
 )
+
+
+class OpenRouterRateLimiter:
+    def __init__(self, min_interval: float = 5.0):
+        self._lock = threading.Lock()
+        self._last_submit_time = 0.0
+        self._min_interval = min_interval
+
+    def acquire(self) -> None:
+        with self._lock:
+            elapsed = time.monotonic() - self._last_submit_time
+            wait_time = max(0.0, self._min_interval - elapsed)
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self._last_submit_time = time.monotonic()
+
+
+_OPENROUTER_RATE_LIMITER = OpenRouterRateLimiter()
 
 
 class FinalAnswerException(Exception):
@@ -860,6 +879,7 @@ def openrouter_generate_code(messages: List[Dict[str, str]]) -> Optional[str]:
         if isinstance(content, str):
             prompt_chars += len(content)
 
+    _OPENROUTER_RATE_LIMITER.acquire()
     started = time.perf_counter()
     LOGGER.info(
         "openrouter_generate_code request_start model=%s messages=%s prompt_chars=%s read_timeout_s=%s",
