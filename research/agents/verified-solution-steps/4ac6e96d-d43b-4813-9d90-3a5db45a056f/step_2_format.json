@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-15T12:17:01.361701+00:00",
+  "attempt": 2,
+  "step_type": "format",
+  "code": "use windows::core::{Error, Result};\nuse windows::Win32::Foundation::{S_FALSE, S_OK};\nuse windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT};\n\npub struct ComGuard {\n    _private: std::marker::PhantomData<*const ()>,\n}\n\nimpl Drop for ComGuard {\n    fn drop(&mut self) {\n        // SAFETY: CoUninitialize must be called exactly once for each successful\n        // CoInitializeEx call. This is guaranteed by the RAII pattern.\n        unsafe {\n            CoUninitialize();\n        }\n    }\n}\n\npub fn com_init(coinit: i32) -> Result<ComGuard> {\n    // SAFETY: CoInitializeEx is a valid Win32 API call. We pass the provided flags\n    // and check the result. The function is safe to call as long as we handle the\n    // return value properly.\n    let hr = unsafe { CoInitializeEx(None, COINIT(coinit)) };\n\n    // Check for success codes: S_OK (0) and S_FALSE (1)\n    if hr == S_OK || hr == S_FALSE {\n        Ok(ComGuard {\n            _private: std::marker::PhantomData,\n        })\n    } else {\n        // Convert the HRESULT to a windows::core::Error\n        Err(Error::from_hresult(hr))\n    }\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

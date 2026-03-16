@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-15T02:54:34.999816+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "#[allow(unused_imports)]\nuse windows::core::{Result, Error};\nuse std::path::{Path, PathBuf};\nuse std::ffi::OsStr;\n\nfn wide_null(s: &OsStr) -> Vec<u16> {\n    use std::{iter::once, os::windows::ffi::OsStrExt};\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn full_path(path: &Path) -> Result<PathBuf> {\n    use windows::Win32::Storage::FileSystem::GetFullPathNameW;\n    use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;\n\n    let wide_path = wide_null(path.as_os_str());\n\n    // First call to get required buffer size\n    let len = unsafe {\n        GetFullPathNameW(\n            windows::core::PCWSTR(wide_path.as_ptr()),\n            0,\n            None,\n            None,\n        )\n    };\n\n    if len == 0 {\n        return Err(Error::from_win32());\n    }\n\n    // Allocate buffer with required size\n    let mut buffer = vec![0u16; len as usize];\n\n    let result = unsafe {\n        GetFullPathNameW(\n            windows::core::PCWSTR(wide_path.as_ptr()),\n            len,\n            Some(buffer.as_mut_ptr()),\n            None,\n        )\n    };\n\n    if result == 0 {\n        return Err(Error::from_win32());\n    }\n\n    // Convert result to PathBuf\n    let path_str = String::from_utf16_lossy(&buffer[..result as usize]);\n    Ok(PathBuf::from(path_str))\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-15T08:58:51.141196+00:00",
+  "attempt": 2,
+  "step_type": "format",
+  "code": "use std::ffi::OsString;\nuse std::os::windows::ffi::OsStringExt;\nuse std::path::PathBuf;\nuse windows::core::{Error, Result, GUID, PWSTR};\nuse windows::Win32::System::Com::CoTaskMemFree;\nuse windows::Win32::UI::Shell::{SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};\n\npub fn known_folder(id: GUID) -> Result<PathBuf> {\n    // SAFETY: FFI call to Windows Shell API\n    let path_ptr = unsafe { SHGetKnownFolderPath(&id, KNOWN_FOLDER_FLAG(0), None) }?;\n\n    // SAFETY: path_ptr is valid on success, guaranteed null-terminated\n    let wide_path = unsafe {\n        let mut len = 0;\n        while *path_ptr.0.add(len) != 0 {\n            len += 1;\n        }\n        std::slice::from_raw_parts(path_ptr.0, len)\n    };\n\n    let os_string = OsString::from_wide(wide_path);\n    let path = PathBuf::from(os_string);\n\n    // SAFETY: Free the allocated memory using CoTaskMemFree\n    unsafe { CoTaskMemFree(Some(path_ptr.0 as *const _)) };\n\n    Ok(path)\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

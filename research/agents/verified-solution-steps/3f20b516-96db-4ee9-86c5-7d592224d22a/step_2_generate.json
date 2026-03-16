@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-15T10:22:37.121425+00:00",
+  "attempt": 2,
+  "step_type": "generate",
+  "code": "use std::path::Path;\nuse windows::core::{Result, PCWSTR};\nuse windows::Win32::Foundation::{CloseHandle, HANDLE};\nuse windows::Win32::Storage::FileSystem::{\n    CreateFileW, WriteFile, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL,\n    FILE_SHARE_READ, OPEN_ALWAYS,\n};\n\nfn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {\n    use std::{iter::once, os::windows::ffi::OsStrExt};\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn append_all(path: &Path, data: &[u8]) -> Result<()> {\n    let wide_path = wide_null(path.as_os_str());\n    let handle = unsafe {\n        CreateFileW(\n            PCWSTR(wide_path.as_ptr()),\n            FILE_APPEND_DATA.0,\n            FILE_SHARE_READ,\n            None,\n            OPEN_ALWAYS,\n            FILE_ATTRIBUTE_NORMAL,\n            None,\n        )\n    }?;\n\n    let handle = Handle(handle);\n\n    if data.is_empty() {\n        return Ok(());\n    }\n\n    let mut bytes_written = 0u32;\n    unsafe {\n        WriteFile(\n            handle.0,\n            Some(data),\n            Some(&mut bytes_written as *mut u32),\n            None,\n        )\n    }?;\n\n    Ok(())\n}\n\nstruct Handle(HANDLE);\n\nimpl Drop for Handle {\n    fn drop(&mut self) {\n        unsafe {\n            let _ = CloseHandle(self.0);\n        }\n    }\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "repair"
+  }
+}

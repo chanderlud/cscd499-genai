@@ -1,0 +1,390 @@
+use std::ffi::OsStr;
+use std::io;
+use std::iter::once;
+use std::os::windows::ffi::OsStrExt;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
+};
+use windows::Win32::Storage::FileSystem::{
+    ConnectNamedPipe, CreateFileW, CreateNamedPipeW, DisconnectNamedPipe, ReadFile, WriteFile,
+    FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+};
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::IO::{CancelIo, OVERLAPPED};
+
+fn wide_null(s: &OsStr) -> Vec<u16> {
+    s.encode_wide().chain(once(0)).collect()
+}
+
+fn create_pipe_name(name: &str) -> Vec<u16> {
+    let full_name = format!(r"\\.\pipe\{}", name);
+    wide_null(OsStr::new(&full_name))
+}
+
+fn server_thread(pipe_name: Vec<u16>, msg: String, result_tx: mpsc::Sender<io::Result<String>>) {
+    let result = (|| -> io::Result<String> {
+        // Create the named pipe with message mode and overlapped I/O
+        let pipe_handle = unsafe {
+            CreateNamedPipeW(
+                PCWSTR(pipe_name.as_ptr()),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                1,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        };
+
+        if pipe_handle.is_invalid() {
+            return Err(Error::from_thread().into());
+        }
+
+        // Create event for overlapped operations
+        let event = unsafe { CreateEventW(None, true, false, None) }?;
+        if event.is_invalid() {
+            unsafe { CloseHandle(pipe_handle) };
+            return Err(Error::from_thread().into());
+        }
+
+        // Connect to the pipe (wait for client)
+        let mut overlapped = OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
+
+        let connect_result = unsafe { ConnectNamedPipe(pipe_handle, Some(&mut overlapped)) };
+        if !connect_result.as_bool() {
+            let err = unsafe { GetLastError() };
+            if err != ERROR_IO_PENDING {
+                unsafe {
+                    CloseHandle(event);
+                    CloseHandle(pipe_handle);
+                }
+                return Err(Error::from_thread().into());
+            }
+
+            // Wait for connection with timeout
+            let wait_result = unsafe { WaitForSingleObject(event, 5000) };
+            if wait_result != WAIT_OBJECT_0 {
+                unsafe {
+                    CancelIo(pipe_handle);
+                    CloseHandle(event);
+                    CloseHandle(pipe_handle);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timeout waiting for client connection",
+                ));
+            }
+        }
+
+        // Read message from client
+        let mut buffer = [0u8; 4096];
+        let mut bytes_read = 0u32;
+        let read_result = unsafe {
+            ReadFile(
+                pipe_handle,
+                Some(&mut buffer),
+                Some(&mut bytes_read),
+                Some(&mut overlapped),
+            )
+        };
+
+        if !read_result.as_bool() {
+            let err = unsafe { GetLastError() };
+            if err != ERROR_IO_PENDING {
+                unsafe {
+                    DisconnectNamedPipe(pipe_handle).ok();
+                    CloseHandle(event);
+                    CloseHandle(pipe_handle);
+                }
+                return Err(Error::from_thread().into());
+            }
+
+            // Wait for read with timeout
+            let wait_result = unsafe { WaitForSingleObject(event, 5000) };
+            if wait_result != WAIT_OBJECT_0 {
+                unsafe {
+                    CancelIo(pipe_handle);
+                    DisconnectNamedPipe(pipe_handle).ok();
+                    CloseHandle(event);
+                    CloseHandle(pipe_handle);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timeout waiting for client message",
+                ));
+            }
+
+            // Get the number of bytes read
+            let mut bytes_transferred = 0u32;
+            unsafe {
+                windows::Win32::System::IO::GetOverlappedResult(
+                    pipe_handle,
+                    &overlapped,
+                    &mut bytes_transferred,
+                    false,
+                )
+            }?;
+            bytes_read = bytes_transferred;
+        }
+
+        // Convert to string and uppercase
+        let received = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
+        let uppercased: String = received
+            .chars()
+            .map(|c| {
+                if c.is_ascii_lowercase() {
+                    (c as u8 - b'a' + b'A') as char
+                } else {
+                    c
+                }
+            })
+            .collect();
+
+        // Write response back to client
+        let response = uppercased.as_bytes();
+        let mut bytes_written = 0u32;
+        let write_result = unsafe {
+            WriteFile(
+                pipe_handle,
+                Some(response),
+                Some(&mut bytes_written),
+                Some(&mut overlapped),
+            )
+        };
+
+        if !write_result.as_bool() {
+            let err = unsafe { GetLastError() };
+            if err != ERROR_IO_PENDING {
+                unsafe {
+                    DisconnectNamedPipe(pipe_handle).ok();
+                    CloseHandle(event);
+                    CloseHandle(pipe_handle);
+                }
+                return Err(Error::from_thread().into());
+            }
+
+            // Wait for write with timeout
+            let wait_result = unsafe { WaitForSingleObject(event, 5000) };
+            if wait_result != WAIT_OBJECT_0 {
+                unsafe {
+                    CancelIo(pipe_handle);
+                    DisconnectNamedPipe(pipe_handle).ok();
+                    CloseHandle(event);
+                    CloseHandle(pipe_handle);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timeout waiting to write response",
+                ));
+            }
+        }
+
+        // Cleanup
+        unsafe {
+            DisconnectNamedPipe(pipe_handle).ok();
+            CloseHandle(event);
+            CloseHandle(pipe_handle);
+        }
+
+        Ok(uppercased)
+    })();
+
+    let _ = result_tx.send(result);
+}
+
+fn client_connect_and_send(pipe_name: &[u16], msg: &str) -> io::Result<String> {
+    // Open the pipe
+    let pipe_handle = unsafe {
+        CreateFileW(
+            PCWSTR(pipe_name.as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
+            windows::Win32::Storage::FileSystem::FILE_SHARE_NONE,
+            None,
+            windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            None,
+        )
+    };
+
+    if pipe_handle.is_invalid() {
+        return Err(Error::from_thread().into());
+    }
+
+    // Create event for overlapped operations
+    let event = unsafe { CreateEventW(None, true, false, None) }?;
+    if event.is_invalid() {
+        unsafe { CloseHandle(pipe_handle) };
+        return Err(Error::from_thread().into());
+    }
+
+    let mut overlapped = OVERLAPPED {
+        hEvent: event,
+        ..Default::default()
+    };
+
+    // Send message to server
+    let msg_bytes = msg.as_bytes();
+    let mut bytes_written = 0u32;
+    let write_result = unsafe {
+        WriteFile(
+            pipe_handle,
+            Some(msg_bytes),
+            Some(&mut bytes_written),
+            Some(&mut overlapped),
+        )
+    };
+
+    if !write_result.as_bool() {
+        let err = unsafe { GetLastError() };
+        if err != ERROR_IO_PENDING {
+            unsafe {
+                CloseHandle(event);
+                CloseHandle(pipe_handle);
+            }
+            return Err(Error::from_thread().into());
+        }
+
+        // Wait for write with timeout
+        let wait_result = unsafe { WaitForSingleObject(event, 5000) };
+        if wait_result != WAIT_OBJECT_0 {
+            unsafe {
+                CancelIo(pipe_handle);
+                CloseHandle(event);
+                CloseHandle(pipe_handle);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timeout waiting to send message",
+            ));
+        }
+    }
+
+    // Read response from server
+    let mut buffer = [0u8; 4096];
+    let mut bytes_read = 0u32;
+    let read_result = unsafe {
+        ReadFile(
+            pipe_handle,
+            Some(&mut buffer),
+            Some(&mut bytes_read),
+            Some(&mut overlapped),
+        )
+    };
+
+    if !read_result.as_bool() {
+        let err = unsafe { GetLastError() };
+        if err != ERROR_IO_PENDING {
+            unsafe {
+                CloseHandle(event);
+                CloseHandle(pipe_handle);
+            }
+            return Err(Error::from_thread().into());
+        }
+
+        // Wait for read with timeout
+        let wait_result = unsafe { WaitForSingleObject(event, 5000) };
+        if wait_result != WAIT_OBJECT_0 {
+            unsafe {
+                CancelIo(pipe_handle);
+                CloseHandle(event);
+                CloseHandle(pipe_handle);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timeout waiting for server response",
+            ));
+        }
+
+        // Get the number of bytes read
+        let mut bytes_transferred = 0u32;
+        unsafe {
+            windows::Win32::System::IO::GetOverlappedResult(
+                pipe_handle,
+                &overlapped,
+                &mut bytes_transferred,
+                false,
+            )
+        }?;
+        bytes_read = bytes_transferred;
+    }
+
+    // Cleanup
+    unsafe {
+        CloseHandle(event);
+        CloseHandle(pipe_handle);
+    }
+
+    // Convert response to string
+    let response = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
+    Ok(response.into_owned())
+}
+
+pub fn named_pipe_uppercase_echo(pipe_name: &str, msg: &str) -> io::Result<String> {
+    let pipe_name_wide = create_pipe_name(pipe_name);
+    let (result_tx, result_rx) = mpsc::channel();
+
+    // Start server thread
+    let server_handle = thread::spawn({
+        let pipe_name_wide = pipe_name_wide.clone();
+        let msg = msg.to_string();
+        move || {
+            server_thread(pipe_name_wide, msg, result_tx);
+        }
+    });
+
+    // Give server a moment to start
+    thread::sleep(Duration::from_millis(100));
+
+    // Run client
+    let client_result = client_connect_and_send(&pipe_name_wide, msg);
+
+    // Wait for server thread with timeout
+    let server_timeout = Duration::from_secs(5);
+    match server_handle.join() {
+        Ok(_) => {}
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Server thread panicked",
+            ));
+        }
+    }
+
+    // Get server result
+    match result_rx.recv_timeout(server_timeout) {
+        Ok(server_result) => {
+            // Check both client and server results
+            let client_response = client_result?;
+            let server_response = server_result?;
+            
+            // Verify they match (should be the same uppercase string)
+            if client_response != server_response {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Client and server responses don't match",
+                ));
+            }
+            
+            Ok(client_response)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Timeout waiting for server result",
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "Server thread disconnected",
+        )),
+    }
+}

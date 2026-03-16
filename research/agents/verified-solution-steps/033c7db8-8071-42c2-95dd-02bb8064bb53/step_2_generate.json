@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-15T06:09:48.215171+00:00",
+  "attempt": 2,
+  "step_type": "generate",
+  "code": "use std::ffi::OsStr;\nuse std::iter::once;\nuse std::os::windows::ffi::OsStrExt;\nuse windows::core::PCWSTR;\nuse windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};\nuse windows::Win32::System::Threading::CreateMutexW;\n\nfn wide_null(s: &OsStr) -> Vec<u16> {\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn named_mutex_already_exists(name: &str) -> std::io::Result<bool> {\n    let wide_name = wide_null(OsStr::new(name));\n    let wide_name_pcwstr = PCWSTR(wide_name.as_ptr());\n\n    // SAFETY: CreateMutexW is called with valid parameters and we check the result\n    let handle = unsafe { CreateMutexW(None, false, wide_name_pcwstr) }?;\n\n    // Check if the mutex already existed\n    let already_exists = if handle != HANDLE::default() {\n        // Get the last error BEFORE closing the handle\n        let last_error = unsafe { GetLastError() };\n        \n        // SAFETY: We just obtained a valid handle from CreateMutexW\n        unsafe { CloseHandle(handle) }?;\n        \n        // Compare the error code directly\n        last_error == ERROR_ALREADY_EXISTS\n    } else {\n        false\n    };\n\n    Ok(already_exists)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "repair"
+  }
+}

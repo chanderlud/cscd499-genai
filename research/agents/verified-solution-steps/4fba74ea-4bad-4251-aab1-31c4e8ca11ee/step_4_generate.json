@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-15T12:25:16.031374+00:00",
+  "attempt": 4,
+  "step_type": "generate",
+  "code": "use windows::core::PWSTR;\nuse windows::Win32::Foundation::{HLOCAL, LocalFree};\nuse windows::Win32::System::Diagnostics::Debug::{\n    FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,\n    FORMAT_MESSAGE_IGNORE_INSERTS,\n};\n\npub fn format_win32_error_message(error_code: u32) -> std::io::Result<String> {\n    let mut buffer: *mut u16 = std::ptr::null_mut();\n    \n    // SAFETY: FormatMessageW with FORMAT_MESSAGE_ALLOCATE_BUFFER allocates memory\n    // that we must free with LocalFree. The function is thread-safe for our usage.\n    let chars_written = unsafe {\n        FormatMessageW(\n            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,\n            Some(std::ptr::null()),\n            error_code,\n            0,\n            PWSTR(&mut buffer as *mut *mut u16 as *mut u16),\n            0,\n            Some(std::ptr::null()),\n        )\n    };\n    \n    if chars_written == 0 {\n        // FormatMessageW failed - return a fallback message instead of empty string\n        return Ok(format!(\"Unknown error (code: 0x{:08X})\", error_code));\n    }\n    \n    // SAFETY: buffer is valid for chars_written characters (excluding null terminator)\n    // and was allocated by FormatMessageW\n    let message_slice = unsafe { std::slice::from_raw_parts(buffer, chars_written as usize) };\n    let message = String::from_utf16_lossy(message_slice);\n    let trimmed_message = message.trim_end().to_string();\n    \n    // SAFETY: buffer was allocated by FormatMessageW with FORMAT_MESSAGE_ALLOCATE_BUFFER\n    // and must be freed with LocalFree\n    unsafe {\n        let _ = LocalFree(Some(HLOCAL(buffer as _)));\n    }\n    \n    Ok(trimmed_message)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "repair"
+  }
+}
