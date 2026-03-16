@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T07:49:59.878020+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{Result, Error, HRESULT};\nuse windows::Win32::Foundation::{HANDLE, ERROR_ALREADY_EXISTS, WIN32_ERROR};\nuse windows::Win32::System::Threading::CreateMutexW;\n\nfn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {\n    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn create_named_mutex(name: &str) -> Result<(HANDLE, bool)> {\n    let wide_name = wide_null(std::ffi::OsStr::new(name));\n    \n    // SAFETY: CreateMutexW is called with valid parameters and we check the result\n    let handle = unsafe {\n        CreateMutexW(None, false, windows::core::PCWSTR(wide_name.as_ptr()))\n    };\n    \n    if handle.is_invalid() {\n        // CreateMutexW failed, get the error from GetLastError\n        return Err(Error::from_thread());\n    }\n    \n    // Check if the mutex already existed\n    let last_error = unsafe { windows::Win32::Foundation::GetLastError() };\n    let created = last_error != ERROR_ALREADY_EXISTS;\n    \n    Ok((handle, created))\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:09:36.116086+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::PWSTR;\n\npub fn normalize_separators(buf: PWSTR) -> usize {\n    // Handle null pointer case\n    if buf.is_null() {\n        return 0;\n    }\n\n    let mut count = 0;\n    let mut ptr = buf.0;\n\n    // SAFETY: We've checked for null, and we're iterating until we find the null terminator.\n    // The caller guarantees the pointer points to a valid null-terminated UTF-16 string.\n    unsafe {\n        while *ptr != 0 {\n            if *ptr == b'\\\\' as u16 {\n                *ptr = b'/' as u16;\n                count += 1;\n            }\n            ptr = ptr.add(1);\n        }\n    }\n\n    count\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

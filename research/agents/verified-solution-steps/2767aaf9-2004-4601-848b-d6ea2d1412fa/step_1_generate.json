@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:04:37.412469+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{PCWSTR, Result, Error, HRESULT};\nuse std::ffi::OsString;\nuse std::os::windows::ffi::OsStringExt;\n\npub fn collect_wide_strings(values: &[PCWSTR]) -> Result<Vec<String>> {\n    let mut result = Vec::with_capacity(values.len());\n    \n    for &pcwstr in values {\n        // Check for null pointer\n        if pcwstr.is_null() {\n            return Err(Error::from_hresult(HRESULT::from_win32(0x80070057))); // E_INVALIDARG\n        }\n        \n        // Find the length of the null-terminated string\n        let mut len = 0;\n        // SAFETY: We've checked for null above, and we trust the caller that the pointer\n        // points to a valid null-terminated UTF-16 string\n        unsafe {\n            while *pcwstr.0.add(len) != 0 {\n                len += 1;\n            }\n        }\n        \n        // Convert to OsString then to String\n        // SAFETY: We've calculated the length and verified it's null-terminated\n        let wide_slice = unsafe { std::slice::from_raw_parts(pcwstr.0, len) };\n        let os_string = OsString::from_wide(wide_slice);\n        \n        match os_string.into_string() {\n            Ok(s) => result.push(s),\n            Err(_) => {\n                return Err(Error::from_hresult(HRESULT::from_win32(0x8007000D))); // ERROR_INVALID_DATA\n            }\n        }\n    }\n    \n    Ok(result)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

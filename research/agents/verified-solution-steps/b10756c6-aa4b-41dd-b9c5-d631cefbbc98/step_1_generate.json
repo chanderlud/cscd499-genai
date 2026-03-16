@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T05:13:16.437093+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use std::path::Path;\nuse windows::core::{Result, Error, HRESULT};\nuse windows::Win32::Foundation::{FILETIME, HANDLE, CloseHandle, INVALID_HANDLE_VALUE};\nuse windows::Win32::Storage::FileSystem::{CreateFileW, SetFileTime, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS};\n\nfn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {\n    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn set_last_write_time(path: &Path, ft: FILETIME) -> Result<()> {\n    let wide_path = wide_null(path.as_os_str());\n    \n    // SAFETY: We're calling a Windows API function with valid parameters.\n    // The wide_path is null-terminated and valid for the duration of the call.\n    let handle = unsafe {\n        CreateFileW(\n            wide_path.as_ptr(),\n            FILE_WRITE_ATTRIBUTES.0,\n            FILE_SHARE_READ,\n            std::ptr::null(),\n            OPEN_EXISTING,\n            FILE_FLAG_BACKUP_SEMANTICS,\n            HANDLE::default(),\n        )\n    };\n    \n    if handle == INVALID_HANDLE_VALUE {\n        return Err(Error::from_thread());\n    }\n    \n    // Ensure handle gets closed even if SetFileTime fails\n    let result = (|| -> Result<()> {\n        // SAFETY: We have a valid handle from CreateFileW and are passing valid pointers.\n        // The ft pointer is valid for the duration of the call.\n        let success = unsafe {\n            SetFileTime(\n                handle,\n                std::ptr::null(), // creation time - leave unchanged\n                std::ptr::null(), // last access time - leave unchanged\n                &ft,\n            )\n        };\n        \n        if !success.as_bool() {\n            return Err(Error::from_thread());\n        }\n        \n        Ok(())\n    })();\n    \n    // SAFETY: We're closing a valid handle that we own.\n    unsafe { CloseHandle(handle) };\n    \n    result\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

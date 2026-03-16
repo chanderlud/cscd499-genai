@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:06:17.121056+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::{Error, HRESULT};\nuse windows::Win32::Foundation::WIN32_ERROR;\n\npub fn try_as_win32(err: &Error) -> Option<WIN32_ERROR> {\n    let hr = err.code();\n\n    // Check if this is a FACILITY_WIN32 HRESULT\n    // FACILITY_WIN32 = 7, which occupies bits 16-25 of the HRESULT\n    // The Win32 error code is in bits 0-15\n    let facility = (hr.0 >> 16) & 0x7FF; // Extract bits 16-26 (11 bits total)\n\n    if facility == 7 {\n        // Extract the Win32 error code from bits 0-15\n        let code = (hr.0 & 0xFFFF) as u32;\n        Some(WIN32_ERROR(code))\n    } else {\n        None\n    }\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

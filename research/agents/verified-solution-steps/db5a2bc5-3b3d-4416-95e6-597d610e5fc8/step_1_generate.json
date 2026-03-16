@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:17:08.770333+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::PCWSTR;\n\npub fn pcwstr_len(ptr: PCWSTR) -> usize {\n    // Check for null pointer first\n    if ptr.0.is_null() {\n        return 0;\n    }\n\n    let mut len = 0;\n    // SAFETY: We've checked for null above. The caller must ensure the pointer\n    // points to a valid null-terminated UTF-16 string. We only read until we\n    // find the null terminator, which is the contract of PCWSTR.\n    unsafe {\n        let mut current = ptr.0;\n        while *current != 0 {\n            len += 1;\n            current = current.add(1);\n        }\n    }\n    len\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

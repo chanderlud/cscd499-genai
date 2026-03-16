@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T07:44:48.607323+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use std::path::Path;\nuse windows::core::{Result, Error, HRESULT, PCWSTR};\nuse windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED, IPropertyStore, PROPVARIANT, VT_UI8};\nuse windows::Win32::UI::Shell::PropertiesSystem::{PSGetPropertyStoreFromParsingName, PKEY_Size, GPS_DEFAULT};\n\nfn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {\n    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn property_size(path: &Path) -> Result<u64> {\n    // Initialize COM for the current thread\n    unsafe {\n        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;\n    }\n    \n    // Ensure COM is uninitialized when we exit\n    struct ComGuard;\n    impl Drop for ComGuard {\n        fn drop(&mut self) {\n            unsafe { CoUninitialize(); }\n        }\n    }\n    let _guard = ComGuard;\n    \n    // Convert path to wide string\n    let wide_path = wide_null(path.as_os_str());\n    let pcwstr = PCWSTR(wide_path.as_ptr());\n    \n    // Get property store from parsing name\n    let property_store: IPropertyStore = unsafe {\n        PSGetPropertyStoreFromParsingName(pcwstr, None, GPS_DEFAULT)?\n    };\n    \n    // Get the PKEY_Size value\n    let mut prop_variant = PROPVARIANT::default();\n    unsafe {\n        property_store.GetValue(&PKEY_Size, &mut prop_variant)?;\n    }\n    \n    // Extract the size value from PROPVARIANT\n    // PKEY_Size should be VT_UI8 (unsigned 64-bit integer)\n    let size = unsafe {\n        if prop_variant.vt != VT_UI8 {\n            return Err(Error::from_hresult(HRESULT::from_win32(0x80070057))); // E_INVALIDARG\n        }\n        *prop_variant.Anonymous.Anonymous.uhVal.QuadPart() as u64\n    };\n    \n    Ok(size)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

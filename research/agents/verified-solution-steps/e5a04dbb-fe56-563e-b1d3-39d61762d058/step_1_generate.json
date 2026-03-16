@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:18:26.770040+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{Result, Error};\nuse windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};\n\npub fn ok_if_already_exists(result: Result<()>) -> Result<()> {\n    match result {\n        Ok(()) => Ok(()),\n        Err(e) => {\n            // Check if the error code matches either ERROR_ALREADY_EXISTS or ERROR_FILE_EXISTS\n            if let Some(win32_error) = e.code().win32_error() {\n                if win32_error == ERROR_ALREADY_EXISTS || win32_error == ERROR_FILE_EXISTS {\n                    return Ok(());\n                }\n            }\n            Err(e)\n        }\n    }\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:15:57.649536+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{PCWSTR, Result};\nuse windows::Win32::Foundation::ERROR_INVALID_PARAMETER;\n\npub fn pcwstr_to_string(ptr: PCWSTR) -> Result<String> {\n    // Handle null pointer case\n    if ptr.is_null() {\n        return Ok(String::new());\n    }\n\n    // SAFETY: We've checked for null, and we'll read until we find a null terminator.\n    // The caller is responsible for ensuring the pointer is valid and null-terminated.\n    let mut len = 0;\n    let raw_ptr = ptr.as_ptr();\n    \n    // Find the length by scanning for null terminator\n    loop {\n        // SAFETY: Reading from the pointer at offset `len`. We'll stop at null.\n        let value = unsafe { *raw_ptr.add(len) };\n        if value == 0 {\n            break;\n        }\n        len += 1;\n    }\n\n    // SAFETY: We've determined the length, and the pointer is valid for `len` elements.\n    let utf16_slice = unsafe { std::slice::from_raw_parts(raw_ptr, len) };\n    \n    String::from_utf16(utf16_slice).map_err(|_| {\n        // Convert invalid UTF-16 to an appropriate Windows error\n        let hr = ERROR_INVALID_PARAMETER.to_hresult();\n        windows::core::Error::from_hresult(hr)\n    })\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

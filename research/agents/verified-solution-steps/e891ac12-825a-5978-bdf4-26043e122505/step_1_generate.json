@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:24:21.476800+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{Result, Error, HRESULT};\n\npub fn hresult_to_result(hr: HRESULT) -> Result<()> {\n    if hr.is_ok() {\n        Ok(())\n    } else {\n        Err(Error::from_hresult(hr))\n    }\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

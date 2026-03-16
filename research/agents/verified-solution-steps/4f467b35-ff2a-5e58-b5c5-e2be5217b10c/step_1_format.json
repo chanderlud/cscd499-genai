@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:06:53.866074+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::HRESULT;\n#[allow(unused_imports)]\nuse windows::core::{Error, Result};\nuse windows::Win32::Foundation::WIN32_ERROR;\n\npub fn win32_to_hresult(code: WIN32_ERROR) -> HRESULT {\n    HRESULT::from_win32(code.0)\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T07:59:04.389379+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::{Error, Result};\nuse windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};\n\npub fn align_mapping_offset(offset: u64) -> Result<(u64, u64, u32)> {\n    let mut system_info = SYSTEM_INFO::default();\n\n    // SAFETY: GetSystemInfo writes to a SYSTEM_INFO struct, which is valid for this call\n    unsafe {\n        GetSystemInfo(&mut system_info);\n    }\n\n    let granularity = system_info.dwAllocationGranularity;\n    let granularity_u64 = granularity as u64;\n\n    // Calculate aligned base by rounding down to nearest multiple of granularity\n    let aligned_base = offset - (offset % granularity_u64);\n    let delta = offset - aligned_base;\n\n    Ok((aligned_base, delta, granularity))\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

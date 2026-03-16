@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T05:15:16.535817+00:00",
+  "attempt": 2,
+  "step_type": "format",
+  "code": "use std::path::Path;\nuse windows::core::{Error, Result, PCWSTR};\nuse windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};\nuse windows::Win32::Storage::FileSystem::{\n    CreateFileW, SetFileTime, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_WRITE_ATTRIBUTES,\n    OPEN_EXISTING,\n};\n\nfn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {\n    use std::iter::once;\n    use std::os::windows::ffi::OsStrExt;\n    s.encode_wide().chain(once(0)).collect()\n}\n\npub fn set_last_write_time(path: &Path, ft: FILETIME) -> Result<()> {\n    let wide_path = wide_null(path.as_os_str());\n\n    let handle = unsafe {\n        CreateFileW(\n            PCWSTR::from_raw(wide_path.as_ptr()),\n            FILE_WRITE_ATTRIBUTES.0,\n            FILE_SHARE_READ,\n            None,\n            OPEN_EXISTING,\n            FILE_FLAG_BACKUP_SEMANTICS,\n            None,\n        )?\n    };\n\n    let result = unsafe { SetFileTime(handle, None, None, Some(&ft as *const FILETIME)) };\n\n    unsafe { CloseHandle(handle) }?;\n\n    result\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

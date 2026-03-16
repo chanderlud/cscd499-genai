@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:05:54.485429+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::PCSTR;\nuse windows::core::{Error, Result};\n\npub fn pcstr_len(ptr: PCSTR) -> usize {\n    // A null pointer has length 0\n    if ptr.is_null() {\n        return 0;\n    }\n\n    let mut len = 0;\n\n    // SAFETY: We've checked that ptr is not null, and we're reading bytes\n    // until we find a null terminator. This is safe as long as the PCSTR\n    // points to a valid null-terminated string, which is the contract.\n    unsafe {\n        while *ptr.0.add(len) != 0 {\n            len += 1;\n        }\n    }\n\n    len\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

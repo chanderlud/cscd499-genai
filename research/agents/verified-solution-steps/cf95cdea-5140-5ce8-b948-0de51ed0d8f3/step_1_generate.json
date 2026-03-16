@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:10:56.488075+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{Result, Error, HRESULT};\n\npub fn same_os_error(win: &windows::core::Error, io: &std::io::Error) -> bool {\n    // Get the HRESULT from the windows::core::Error\n    let win_hresult = win.code();\n    \n    // Get the raw OS error from std::io::Error\n    match io.raw_os_error() {\n        Some(io_code) => {\n            // Convert the raw OS error (i32) to HRESULT using the canonical conversion\n            let io_hresult = HRESULT::from_win32(io_code as u32);\n            \n            // Compare the canonical HRESULTs\n            win_hresult == io_hresult\n        }\n        None => false,\n    }\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

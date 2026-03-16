@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T06:43:45.071643+00:00",
+  "attempt": 2,
+  "step_type": "generate",
+  "code": "use std::ffi::c_void;\nuse std::io::Result;\nuse std::thread;\n\nuse windows::Win32::System::Threading::{\n    FlsAlloc, FlsFree, FlsSetValue, FLS_OUT_OF_INDEXES,\n};\n\n// FLS destructor callback that increments a shared counter\nunsafe extern \"system\" fn fls_destructor(value: *const c_void) {\n    if !value.is_null() {\n        let counter = value as *mut i32;\n        windows::Win32::System::Threading::InterlockedIncrement(counter);\n    }\n}\n\npub fn fls_destructor_count(threads: usize) -> Result<i32> {\n    // Allocate shared counter on heap\n    let counter = Box::into_raw(Box::new(0i32));\n    \n    // Allocate FLS slot with destructor callback\n    let slot = unsafe { FlsAlloc(Some(fls_destructor)) };\n    if slot == FLS_OUT_OF_INDEXES {\n        // Clean up counter before returning error\n        unsafe { drop(Box::from_raw(counter)); }\n        return Err(windows::core::Error::from_thread().into());\n    }\n    \n    // Spawn threads that set values in the FLS slot\n    let mut handles = Vec::with_capacity(threads);\n    for _ in 0..threads {\n        let counter_ptr = counter as *mut c_void;\n        let handle = thread::spawn(move || -> Result<()> {\n            // Set non-null value (counter pointer) into FLS slot\n            // Wrap in Some() and cast to *const c_void\n            unsafe { FlsSetValue(slot, Some(counter_ptr as *const c_void)) }?;\n            // Thread exits here, triggering destructor callback\n            Ok(())\n        });\n        handles.push(handle);\n    }\n    \n    // Wait for all threads to complete\n    for handle in handles {\n        handle.join().map_err(|_| {\n            windows::core::Error::from_thread()\n        })??;\n    }\n    \n    // Free the FLS slot\n    unsafe { FlsFree(slot) }?;\n    \n    // Read final count and clean up\n    let count = unsafe { *counter };\n    unsafe { drop(Box::from_raw(counter)); }\n    \n    Ok(count)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "repair"
+  }
+}

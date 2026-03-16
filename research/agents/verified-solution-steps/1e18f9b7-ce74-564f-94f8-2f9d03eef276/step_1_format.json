@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:04:31.343234+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::{Result, HRESULT};\nuse windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};\n\npub fn exists_from_result(result: Result<()>) -> Result<bool> {\n    match result {\n        Ok(()) => Ok(true),\n        Err(e) => {\n            let hr = e.code();\n            if hr == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0)\n                || hr == HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0)\n            {\n                Ok(false)\n            } else {\n                Err(e)\n            }\n        }\n    }\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T06:24:01.618934+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use std::ffi::OsString;\nuse std::os::windows::ffi::OsStringExt;\nuse windows::core::{Result, Error, PCWSTR};\nuse windows::Win32::System::Environment::ExpandEnvironmentStringsW;\n\npub fn expand_env(input: &str) -> Result<OsString> {\n    // Convert input to wide null-terminated string\n    let wide_input: Vec<u16> = input\n        .encode_utf16()\n        .chain(std::iter::once(0))\n        .collect();\n\n    // First call to get required buffer size\n    let required_size = unsafe {\n        ExpandEnvironmentStringsW(PCWSTR(wide_input.as_ptr()), None)\n    };\n    \n    if required_size == 0 {\n        return Err(Error::from_thread());\n    }\n\n    // Allocate buffer with required size\n    let mut buffer = vec![0u16; required_size as usize];\n\n    // Second call to expand environment strings\n    let result = unsafe {\n        ExpandEnvironmentStringsW(\n            PCWSTR(wide_input.as_ptr()),\n            Some(buffer.as_mut_slice()),\n        )\n    };\n\n    if result == 0 {\n        return Err(Error::from_thread());\n    }\n\n    // Convert result to OsString (excluding the null terminator)\n    let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());\n    Ok(OsString::from_wide(&buffer[..len]))\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

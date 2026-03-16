@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:28:23.533246+00:00",
+  "attempt": 3,
+  "step_type": "format",
+  "code": "use windows::core::Result;\nuse windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};\n\npub fn ok_if_already_exists(result: Result<()>) -> Result<()> {\n    match result {\n        Ok(()) => Ok(()),\n        Err(e) => {\n            // Get the HRESULT from the error\n            let hr = e.code();\n\n            // Check if it's a Win32 error (facility code 7)\n            if (hr.0 as u32 >> 16) & 0x7FFF == 7 {\n                // Extract the Win32 error code (lower 16 bits)\n                let win32_code = hr.0 as u32 & 0xFFFF;\n\n                if win32_code == ERROR_ALREADY_EXISTS.0 || win32_code == ERROR_FILE_EXISTS.0 {\n                    return Ok(());\n                }\n            }\n            Err(e)\n        }\n    }\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

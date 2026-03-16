@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:08:09.808534+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{PSTR, Result, Error};\nuse windows::Win32::Foundation::{ERROR_INVALID_DATA, ERROR_INSUFFICIENT_BUFFER};\n\npub fn write_ascii_upper(buf: PSTR, cap: usize, value: &str) -> Result<usize> {\n    // Check if input is ASCII\n    if !value.is_ascii() {\n        return Err(Error::from_hresult(ERROR_INVALID_DATA.to_hresult()));\n    }\n    \n    // Check buffer capacity (need space for string + null terminator)\n    if cap < value.len() + 1 {\n        return Err(Error::from_hresult(ERROR_INSUFFICIENT_BUFFER.to_hresult()));\n    }\n    \n    // SAFETY: We've validated that:\n    // 1. The buffer has sufficient capacity (cap >= value.len() + 1)\n    // 2. The caller is responsible for ensuring buf points to valid memory of at least cap bytes\n    // 3. We only write within the bounds of the allocated buffer\n    unsafe {\n        let src = value.as_bytes();\n        let dst = std::slice::from_raw_parts_mut(buf.0, cap);\n        \n        // Convert and copy each byte\n        for (i, &byte) in src.iter().enumerate() {\n            dst[i] = if byte.is_ascii_lowercase() {\n                byte - 32  // Convert a-z to A-Z\n            } else {\n                byte\n            };\n        }\n        \n        // Add null terminator\n        dst[value.len()] = 0;\n    }\n    \n    Ok(value.len())\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}

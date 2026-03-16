@@ -1,3 +1,0 @@
-{"id": "e214238c", "idea": "Query system power status using GetSystemPowerStatus", "ok": true}
-{"id": "4bba0015", "idea": "Enumerate display monitors with EnumDisplayMonitors", "ok": true}
-{"id": "8386a98c", "idea": "Get system memory info via GlobalMemoryStatusEx", "ok": true}

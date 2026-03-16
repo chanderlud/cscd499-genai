@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T07:51:39.093572+00:00",
+  "attempt": 5,
+  "step_type": "generate",
+  "code": "use windows::core::{Result, HRESULT};\nuse windows::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_TIMEOUT, HANDLE, CloseHandle};\nuse windows::Win32::System::IO::{\n    CreateIoCompletionPort, GetQueuedCompletionStatus, PostQueuedCompletionStatus,\n};\nuse std::ptr;\n\nstruct IocpHandle(HANDLE);\n\nimpl Drop for IocpHandle {\n    fn drop(&mut self) {\n        unsafe { CloseHandle(self.0); }\n    }\n}\n\npub fn iocp_post_and_drain(keys: &[usize], timeout_ms: u32) -> Result<Vec<usize>> {\n    // Create IOCP - returns Result<HANDLE>\n    let iocp = unsafe {\n        CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, 0)\n    }?;\n    \n    let _guard = IocpHandle(iocp);\n    \n    // Post all completions\n    for &key in keys {\n        unsafe {\n            PostQueuedCompletionStatus(iocp, 0, key, None)?;\n        }\n    }\n    \n    // Drain completions\n    let mut seen = Vec::with_capacity(keys.len());\n    let mut bytes_transferred = 0u32;\n    let mut completion_key = 0usize;\n    let mut overlapped = ptr::null_mut();\n    \n    for _ in 0..keys.len() {\n        match unsafe {\n            GetQueuedCompletionStatus(\n                iocp,\n                &mut bytes_transferred,\n                &mut completion_key,\n                &mut overlapped,\n                timeout_ms,\n            )\n        } {\n            Ok(()) => seen.push(completion_key),\n            Err(err) => {\n                // Check if this is a timeout error\n                if err.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {\n                    break;\n                }\n                return Err(err);\n            }\n        }\n    }\n    \n    Ok(seen)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "repair"
+  }
+}

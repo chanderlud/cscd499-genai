@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:08:13.599898+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::PCWSTR;\n\npub fn pcwstr_eq(ptr: PCWSTR, expected: &str) -> bool {\n    // Handle null pointer case - only equal to empty string\n    if ptr.is_null() {\n        return expected.is_empty();\n    }\n\n    // Convert expected string to UTF-16 for comparison\n    let expected_utf16: Vec<u16> = expected.encode_utf16().collect();\n\n    // Safety: We've checked ptr is not null, and we'll only read until null terminator\n    unsafe {\n        let mut i = 0;\n        loop {\n            let current_char = *ptr.0.add(i);\n\n            // Check if we've reached end of expected string\n            if i == expected_utf16.len() {\n                // PCWSTR must end here too (null terminator)\n                return current_char == 0;\n            }\n\n            // Check if characters match\n            if current_char != expected_utf16[i] {\n                return false;\n            }\n\n            // Check if we've hit null terminator in PCWSTR\n            if current_char == 0 {\n                // PCWSTR ended before expected string\n                return false;\n            }\n\n            i += 1;\n        }\n    }\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

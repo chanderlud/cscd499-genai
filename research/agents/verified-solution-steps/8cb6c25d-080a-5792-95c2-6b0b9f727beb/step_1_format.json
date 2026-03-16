@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-03-16T16:14:36.045203+00:00",
+  "attempt": 1,
+  "step_type": "format",
+  "code": "use windows::core::{Error, Result, HRESULT};\nuse windows::Win32::Foundation::WIN32_ERROR;\n\npub fn check_win32(code: WIN32_ERROR) -> Result<()> {\n    if code.0 == 0 {\n        Ok(())\n    } else {\n        let hresult = HRESULT::from_win32(code.0);\n        Err(Error::from_hresult(hresult))\n    }\n}",
+  "eval_result": null,
+  "extra_context": {}
+}

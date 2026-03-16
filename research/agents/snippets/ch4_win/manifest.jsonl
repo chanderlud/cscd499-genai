@@ -1,5 +1,0 @@
-{"id": "afe46ff9", "idea": "Enumerate network adapters with GetAdaptersAddresses", "ok": true}
-{"id": "7c0586c2", "idea": "Handle buffer size with ERROR_BUFFER_OVERFLOW", "ok": true}
-{"id": "7975138f", "idea": "Parse IPv4 addresses from SOCKADDR_IN structures", "ok": true}
-{"id": "cb6bf311", "idea": "Parse IPv6 addresses from SOCKADDR_IN6 structures", "ok": true}
-{"id": "efae1c22", "idea": "Filter out unspecified IP addresses", "ok": true}

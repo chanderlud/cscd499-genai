@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:13:47.717594+00:00",
+  "attempt": 2,
+  "step_type": "generate",
+  "code": "use windows::core::{Error, HRESULT};\nuse windows::Win32::Foundation::E_FAIL;\n\npub fn io_error_to_windows(err: std::io::Error) -> Error {\n    match err.raw_os_error() {\n        Some(code) => {\n            // Convert i32 OS error code to u32 for HRESULT::from_win32\n            let hresult = HRESULT::from_win32(code as u32);\n            Error::from_hresult(hresult)\n        }\n        None => Error::from_hresult(E_FAIL),\n    }\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "repair"
+  }
+}

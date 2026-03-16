@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-16T16:07:14.827513+00:00",
+  "attempt": 1,
+  "step_type": "generate",
+  "code": "use windows::core::{PWSTR, Result, Error, HRESULT};\nuse windows::Win32::Foundation::{E_INVALIDARG, E_NOT_SUFFICIENT_BUFFER};\n\npub fn write_wide(buf: PWSTR, cap: usize, value: &str) -> Result<usize> {\n    // Check for null buffer pointer\n    if buf.is_null() {\n        return Err(Error::from_hresult(E_INVALIDARG));\n    }\n\n    // Convert the UTF-8 string to UTF-16\n    let utf16: Vec<u16> = value.encode_utf16().collect();\n    let len = utf16.len();\n\n    // Check if buffer has enough capacity (including null terminator)\n    if cap < len + 1 {\n        return Err(Error::from_hresult(E_NOT_SUFFICIENT_BUFFER));\n    }\n\n    // SAFETY: We've validated the buffer is non-null and has sufficient capacity.\n    // The caller guarantees the buffer remains valid for the duration of this call.\n    unsafe {\n        // Copy the UTF-16 code units into the buffer\n        std::ptr::copy_nonoverlapping(utf16.as_ptr(), buf.as_ptr(), len);\n        \n        // Write the null terminator\n        *buf.as_ptr().add(len) = 0;\n    }\n\n    Ok(len)\n}",
+  "eval_result": null,
+  "extra_context": {
+    "phase": "initial"
+  }
+}
