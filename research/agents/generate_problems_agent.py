@@ -44,6 +44,11 @@ Required output structure:
   - `**Signature:**` bullet with a fenced Rust signature block
   - `**Example:**` bullet with a minimal usage snippet
 
+Signature & Example rules:
+- Use `windows::core::Result<T>` (or `windows::core::Result<()>`) for all fallible return types in the signature.
+- Do NOT include any `use windows::...` import lines in the Signature or Example blocks.
+- The Example block should show a call-site usage only, not import declarations.
+
 Do not include any extra prose outside this structure.
 """
 
@@ -188,6 +193,32 @@ Windows repair reminders:
 Output the complete fixed src/main.rs in a single ```rust code fence.
 """
 
+REALIGN_SYSTEM_PROMPT = """You are a problem-statement editor for Rust/Win32 coding challenges.
+
+Your sole job is to update the problem description so it matches the accepted solution exactly, without changing the challenge's intent.
+
+Rules:
+- Preserve the original `TITLE:` and `PROBLEM:` sentinel structure exactly.
+- Update `**Spec:**`, `**Constraints:**`, `**Signature:**`, and `**Example:**` so they accurately reflect what the solution actually implements.
+- The `**Signature:**` must use `windows::core::Result<T>` (or `windows::core::Result<()>`) for any fallible function.
+- Do NOT include any `use windows::...` import lines in the `**Signature:**` or `**Example:**` blocks.
+- Do not add new requirements that the solution does not satisfy.
+- Do not remove requirements that the solution does satisfy.
+- Output only the updated problem block starting at `TITLE:` through the end of the Markdown block.
+- Do not output any additional prose.
+"""
+
+REALIGN_USER_TEMPLATE = """## Original Problem
+{problem_md}
+
+## Accepted Solution
+```rust
+{solution_code}
+```
+
+Re-align the problem description to match the solution exactly, following the system instructions.
+"""
+
 
 @dataclass
 class ProblemSolutionResult:
@@ -269,6 +300,26 @@ def _extract_problem_md(response_text: str) -> Optional[str]:
         problem_md = "\n".join(lines[sentinel_index + 1 :]).strip()
 
     return problem_md or None
+
+
+def _realign_problem(problem_md: str, solution_code: str, run_id: str) -> str:
+    messages = [
+        {"role": "system", "content": REALIGN_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": REALIGN_USER_TEMPLATE.format(problem_md=problem_md, solution_code=solution_code),
+        },
+    ]
+    response_text = openrouter_generate_code(messages)
+    if response_text is None or not response_text.strip():
+        LOGGER.warning("realign_problem empty_response run_id=%s", run_id)
+        return problem_md
+
+    aligned_problem_md = _extract_problem_md(response_text)
+    if not aligned_problem_md:
+        LOGGER.warning("realign_problem invalid_problem_md run_id=%s", run_id)
+        return problem_md
+    return aligned_problem_md
 
 
 def _format_previous_ideas(previously_generated: List[ProblemSolutionResult]) -> str:
@@ -554,16 +605,40 @@ def generate_one_problem(
                     formatted_eval = None
 
                 if isinstance(formatted_eval, dict) and formatted_eval.get("ok") is True:
+                    aligned_problem_md = _realign_problem(problem_md, formatted.rstrip() + "\n", run_id)
+                    recorder.record_step(
+                        attempt=attempt,
+                        step_type="realign",
+                        code=formatted.rstrip() + "\n",
+                        eval_result=None,
+                        extra_context={
+                            "idea": idea,
+                            "original_problem_preview": preview_text(problem_md, 300),
+                            "aligned_problem_preview": preview_text(aligned_problem_md, 300),
+                        },
+                    )
                     return ProblemSolutionResult(
                         idea=idea,
-                        problem_md=problem_md,
+                        problem_md=aligned_problem_md,
                         main_rs=formatted.rstrip() + "\n",
                         last_eval=formatted_eval,
                     )
 
+            aligned_problem_md = _realign_problem(problem_md, code.rstrip() + "\n", run_id)
+            recorder.record_step(
+                attempt=attempt,
+                step_type="realign",
+                code=code.rstrip() + "\n",
+                eval_result=None,
+                extra_context={
+                    "idea": idea,
+                    "original_problem_preview": preview_text(problem_md, 300),
+                    "aligned_problem_preview": preview_text(aligned_problem_md, 300),
+                },
+            )
             return ProblemSolutionResult(
                 idea=idea,
-                problem_md=problem_md,
+                problem_md=aligned_problem_md,
                 main_rs=code.rstrip() + "\n",
                 last_eval=eval_result,
             )
