@@ -33,6 +33,8 @@ Output dataset format:
 Example:
     python prepare_training.py ^
       --root data ^
+      --secondary-roots extra_data1 ^
+      --secondary-roots extra_data2 ^
       --output-dir prepared ^
       --model-name Qwen/Qwen2.5-Coder-7B-Instruct ^
       --system-prompt "You are a precise Rust coding assistant. Return correct, idiomatic Rust."
@@ -124,6 +126,12 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Optional JSONL dataset path to merge (repeatable).",
+    )
+    parser.add_argument(
+        "--secondary-roots",
+        action="append",
+        default=[],
+        help="Additional dataset root directory containing problems/ and solutions/ sub-folders to merge into the main dataset (repeatable).",
     )
     parser.add_argument(
         "--problem-suffix",
@@ -726,6 +734,19 @@ def main() -> None:
     if not solutions_dir.exists() or not solutions_dir.is_dir():
         raise FileNotFoundError(f"Solutions directory not found: {solutions_dir}")
 
+    secondary_scan_targets: List[Tuple[Path, Path, Path]] = []
+    for secondary_root_str in args.secondary_roots:
+        sec_root = Path(secondary_root_str)
+        sec_problems_dir = sec_root / "problems"
+        sec_solutions_dir = sec_root / "solutions"
+        if not sec_problems_dir.exists() or not sec_problems_dir.is_dir():
+            print(f"Warning: secondary root missing problems directory: {sec_problems_dir}", file=sys.stderr)
+            continue
+        if not sec_solutions_dir.exists() or not sec_solutions_dir.is_dir():
+            print(f"Warning: secondary root missing solutions directory: {sec_solutions_dir}", file=sys.stderr)
+            continue
+        secondary_scan_targets.append((sec_root, sec_problems_dir, sec_solutions_dir))
+
     print(f"Loading tokenizer: {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True, local_files_only=args.local_files_only)
 
@@ -737,6 +758,18 @@ def main() -> None:
         solution_suffix=args.solution_suffix,
         encoding=args.encoding,
     )
+    for sec_root, sec_problems_dir, sec_solutions_dir in secondary_scan_targets:
+        print(f"Scanning secondary root: {sec_root}")
+        sec_records, sec_missing_solutions, sec_missing_problems = pair_examples(
+            problems_dir=sec_problems_dir,
+            solutions_dir=sec_solutions_dir,
+            problem_suffix=args.problem_suffix,
+            solution_suffix=args.solution_suffix,
+            encoding=args.encoding,
+        )
+        records.extend(sec_records)
+        missing_solutions.extend(sec_missing_solutions)
+        missing_problems.extend(sec_missing_problems)
 
     if args.max_examples is not None:
         records = records[: args.max_examples]
@@ -946,6 +979,7 @@ def main() -> None:
             "root": str(root),
             "problems_dir": str(problems_dir),
             "solutions_dir": str(solutions_dir),
+            "secondary_roots": [str(sec_root) for sec_root, _, _ in secondary_scan_targets],
             "problem_suffix": args.problem_suffix,
             "solution_suffix": args.solution_suffix,
             "encoding": args.encoding,
