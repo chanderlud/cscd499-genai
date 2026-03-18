@@ -14,11 +14,7 @@ use std::fs::{File};
 use std::time::Duration;
 use tokio::time::sleep;
 
-const WINDOWS_DEPENDENCIES: &str = r#"windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_UI", "Win32_UI_Shell", "Win32_System_Ole", "Win32_System_WindowsProgramming", "Win32_System_SystemInformation", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_Security"] }"#;
-const CARGO_DEPENDENCIES: &str = r#"regex = "*"
-rand = "*"
-md5 = "*"
-"#;
+const CARGO_DEPENDENCIES: &str = include_str!("../../rust_dependencies.md");
 const MAX_RETRIES: usize = 10;
 
 #[derive(Parser, Debug, Clone)]
@@ -57,7 +53,7 @@ struct Cli {
     openrouter_base: String,
 
     /// Evaluation API base URL (your service)
-    #[arg(long, default_value = "http://localhost:3000")]
+    #[arg(long, default_value = "http://localhost:3002")]
     eval_base: String,
 
     /// Optional X-API-Key header for your evaluation API
@@ -69,7 +65,7 @@ struct Cli {
     temperature: f32,
 
     /// Max tokens for generation
-    #[arg(long, default_value_t = 1400)]
+    #[arg(long, default_value_t = 16000)]
     max_tokens: u32,
 
     /// Concurrency of problems

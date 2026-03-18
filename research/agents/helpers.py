@@ -736,7 +736,7 @@ def code_help_tool(prompt: str, run_id: str) -> str:
         return ""
 
     base_url = env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = env("OPENROUTER_REVIEW_MODEL", "openrouter/hunter-alpha")
+    model = env("OPENROUTER_REVIEW_MODEL", "arcee-ai/trinity-large-preview:free")
     read_timeout_s = int(os.getenv("OPENROUTER_READ_TIMEOUT", "600"))
     timeout = httpx.Timeout(connect=10.0, read=float(read_timeout_s), write=30.0, pool=10.0)
 
@@ -865,7 +865,7 @@ def openrouter_generate_code(messages: List[Dict[str, str]]) -> Optional[str]:
     model = (
         os.getenv("OPENROUTER_CODE_MODEL")
         or os.getenv("OPENROUTER_REVIEW_MODEL")
-        or "openrouter/hunter-alpha"
+        or "arcee-ai/trinity-large-preview:free"
     )
     max_tokens = int(os.getenv("OPENROUTER_MAX_TOKENS", "4096"))
     temperature = float(os.getenv("OPENROUTER_TEMPERATURE", "0.2"))

@@ -200,7 +200,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let concurrency: usize = std::env::var("CONCURRENCY")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(4);
+        .unwrap_or(12);
 
     let api_key = std::env::var("API_KEY").ok();
     let fixed_dependencies = include_str!("../../rust_dependencies.md").to_string();

@@ -11,7 +11,7 @@ NON-NEGOTIABLE OUTPUT RULES
 6) Determinism: no randomness, no time-based behavior, no non-deterministic ordering.
 
 CRATE / API RULES
-- Depend only on std, regex, rand, and md5
+- Depend only on std, regex, rand, md5, and sha2
 - Include any required `using` statements at the start of the output
 
 IMPLEMENTATION RULES

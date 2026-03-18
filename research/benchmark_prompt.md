@@ -6,17 +6,17 @@ NON-NEGOTIABLE OUTPUT RULES
 1) Your response MUST NOT be empty.
 2) Output ONLY valid Rust code (no markdown, no prose, no headings, no explanations, no code fences).
 3) Output MUST include the function whose signature appears in the problem, with the signature EXACTLY unchanged (including visibility, generics, lifetimes, where-clauses, attributes, and return type).
-4) Do NOT output tests, modules, or a main function.
+4) Do NOT output tests or modules.
 5) Helper structs/enums/functions are allowed if needed.
 6) Determinism: no randomness, no time-based behavior, no non-deterministic ordering.
 
 CRATE / API RULES
-- Depend only on std and windows crate v0.62.2, regex, rand, and md5.
+- Depend only on std, regex, rand, md5, sha2, and windows crate v0.62.2.
 - Include any required `using` statements at the start of the output.
 - Always include this import at top of the output (even if unused):
   #[allow(unused_imports)]
   use windows::core::{Result, Error};
-- Utilize the windows API to implement the problem, do not cheat and use the std crate
+- Utilize the windows API to implement the problem, do not cheat and use the std crate.
 
 ERROR HANDLING RULES
 - Do NOT change the given function signature.
