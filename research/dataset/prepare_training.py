@@ -22,16 +22,7 @@ Features:
     * duplicate report JSON
     * windows import histogram CSV
 
-Output dataset formats:
-1) pair (default)
-   {
-     "id": "...",
-     "problem": "...",
-     "solution": "...",
-     "metadata": {...}
-   }
-
-2) conversational
+Output dataset format:
    {
      "id": "...",
      "prompt": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}],
@@ -44,7 +35,6 @@ Example:
       --root data ^
       --output-dir prepared ^
       --model-name Qwen/Qwen2.5-Coder-7B-Instruct ^
-      --output-format pair ^
       --system-prompt "You are a precise Rust coding assistant. Return correct, idiomatic Rust."
 """
 
@@ -55,6 +45,7 @@ import csv
 import hashlib
 import json
 import math
+import random
 import re
 import statistics
 import sys
@@ -116,13 +107,6 @@ def parse_args() -> argparse.Namespace:
         help="Output dataset filename inside --output-dir. Default: dataset.jsonl",
     )
     parser.add_argument(
-        "--output-format",
-        type=str,
-        default="pair",
-        choices=["pair", "conversational"],
-        help="pair -> fields problem/solution; conversational -> prompt/completion",
-    )
-    parser.add_argument(
         "--model-name",
         type=str,
         default="Qwen/Qwen2.5-Coder-7B-Instruct",
@@ -133,19 +117,13 @@ def parse_args() -> argparse.Namespace:
         "--system-prompt",
         type=str,
         default="",
-        help="Optional system prompt when --output-format conversational is used.",
+        help="System prompt prepended to all rows.",
     )
     parser.add_argument(
-        "--problem-field",
-        type=str,
-        default="problem",
-        help="Field name for problem text when --output-format pair is used.",
-    )
-    parser.add_argument(
-        "--solution-field",
-        type=str,
-        default="solution",
-        help="Field name for solution text when --output-format pair is used.",
+        "--extra-datasets",
+        action="append",
+        default=[],
+        help="Optional JSONL dataset path to merge (repeatable).",
     )
     parser.add_argument(
         "--problem-suffix",
@@ -170,6 +148,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap after pairing/sorting, useful for smoke tests.",
+    )
+    parser.add_argument(
+        "--max-repair-fraction",
+        type=float,
+        default=0.15,
+        help="Maximum fraction of final dataset that may be 'repair' type (default 0.15).",
+    )
+    parser.add_argument(
+        "--max-critique-fraction",
+        type=float,
+        default=0.07,
+        help="Maximum fraction of final dataset that may be 'critique' type (default 0.07).",
     )
     parser.add_argument(
         "--preview-top-n",
@@ -465,8 +455,9 @@ def terminal_item(path: str) -> str:
 # Serialization / reporting
 # -----------------------------
 
-def make_dataset_row(record: ExampleRecord, stats: FileStats, output_format: str, problem_field: str, solution_field: str, system_prompt: str) -> Dict[str, Any]:
+def make_dataset_row(record: ExampleRecord, stats: FileStats, system_prompt: str) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
+        "type": "base",
         "problem_path": stats.problem_path,
         "solution_path": stats.solution_path,
         "problem_tokens": stats.problem_tokens,
@@ -483,19 +474,182 @@ def make_dataset_row(record: ExampleRecord, stats: FileStats, output_format: str
         "solution_sha256": stats.solution_sha256,
     }
 
-    row: Dict[str, Any] = {"id": record.sample_id, "metadata": metadata}
-    if output_format == "pair":
-        row[problem_field] = record.problem_text.strip()
-        row[solution_field] = record.solution_text.rstrip() + "\n"
+    user_content = record.problem_text.strip()
+    assistant_content = record.solution_text.rstrip() + "\n"
+    return {
+        "id": record.sample_id,
+        "prompt": [
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_content},
+        ],
+        "completion": [{"role": "assistant", "content": assistant_content}],
+        "metadata": metadata,
+    }
+
+
+def load_extra_dataset(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                print(f"Warning: invalid JSON at {path}:{line_number}; skipping.", file=sys.stderr)
+                continue
+            if not isinstance(payload, dict):
+                print(f"Warning: non-object row at {path}:{line_number}; skipping.", file=sys.stderr)
+                continue
+            if not isinstance(payload.get("id"), str) or not payload.get("id"):
+                print(f"Warning: row missing id at {path}:{line_number}; skipping.", file=sys.stderr)
+                continue
+            rows.append(payload)
+    return rows
+
+
+def filter_by_base_ids(extra_rows: Sequence[Dict[str, Any]], base_ids: set[str]) -> Tuple[List[Dict[str, Any]], int]:
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for row in extra_rows:
+        problem_id = row.get("problem_id")
+        row_id = row.get("id")
+        match_key = problem_id if isinstance(problem_id, str) and problem_id else row_id
+        if isinstance(match_key, str) and match_key in base_ids:
+            kept.append(row)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+def cap_type_fraction(
+    rows: List[Dict[str, Any]],
+    type_name: str,
+    max_fraction: float,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    typed: List[Dict[str, Any]] = []
+    others: List[Dict[str, Any]] = []
+    for row in rows:
+        metadata = row.get("metadata")
+        row_type = metadata.get("type") if isinstance(metadata, dict) else None
+        if row_type == type_name:
+            typed.append(row)
+        else:
+            others.append(row)
+
+    allowed = int(math.floor(max_fraction * len(rows)))
+    if len(typed) <= allowed:
+        return rows
+
+    sampled_typed = rng.sample(typed, allowed)
+    print(
+        f"Warning: capped '{type_name}' rows from {len(typed)} to {allowed} "
+        f"(max {max_fraction * 100:.1f}% of total)",
+        file=sys.stderr,
+    )
+    return others + sampled_typed
+
+
+def _to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def convert_to_conversational(row: Dict[str, Any], system_prompt: str) -> Dict[str, Any]:
+    row_id = str(row.get("id") or "")
+    row_type = str(row.get("type") or "").strip().lower()
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    merged_metadata: Dict[str, Any] = {"type": row_type or "extra", **metadata}
+
+    if row_type == "repair":
+        user_content = (
+            "Problem:\n"
+            f"{_to_text(row.get('problem')).strip()}\n\n"
+            "Failed code:\n"
+            "```rust\n"
+            f"{_to_text(row.get('failed_code')).rstrip()}\n"
+            "```\n\n"
+            "Feedback:\n"
+            f"{_to_text(row.get('feedback')).strip()}"
+        )
+        assistant_content = _to_text(row.get("corrected_code")).rstrip() + "\n"
+    elif row_type == "critique":
+        critique_obj = row.get("critique")
+        critique_text = _to_text(critique_obj if critique_obj is not None else row.get("diagnosis")).strip()
+        user_content = (
+            "Problem:\n"
+            f"{_to_text(row.get('problem')).strip()}\n\n"
+            "Candidate code:\n"
+            "```rust\n"
+            f"{_to_text(row.get('candidate_code')).rstrip()}\n"
+            "```\n\n"
+            "Feedback:\n"
+            f"{_to_text(row.get('feedback')).strip()}"
+        )
+        assistant_content = critique_text
+    elif isinstance(row.get("prompt"), list) and isinstance(row.get("completion"), list):
+        prompt_rows = row.get("prompt") if isinstance(row.get("prompt"), list) else []
+        completion_rows = row.get("completion") if isinstance(row.get("completion"), list) else []
+        user_parts: List[str] = []
+        assistant_parts: List[str] = []
+        for msg in prompt_rows:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            content = _to_text(msg.get("content")).strip()
+            if role == "user" and content:
+                user_parts.append(content)
+        for msg in completion_rows:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            content = _to_text(msg.get("content")).strip()
+            if role == "assistant" and content:
+                assistant_parts.append(content)
+        user_content = "\n\n".join(user_parts).strip()
+        assistant_content = "\n\n".join(assistant_parts).strip()
     else:
-        prompt: List[Dict[str, str]] = []
-        if system_prompt.strip():
-            prompt.append({"role": "system", "content": system_prompt.strip()})
-        prompt.append({"role": "user", "content": record.problem_text.strip()})
-        completion = [{"role": "assistant", "content": record.solution_text.rstrip() + "\n"}]
-        row["prompt"] = prompt
-        row["completion"] = completion
-    return row
+        problem = _to_text(row.get("problem")).strip()
+        failed_code = _to_text(row.get("failed_code")).strip()
+        feedback = _to_text(row.get("feedback")).strip()
+        if problem and failed_code:
+            user_content = (
+                "Problem:\n"
+                f"{problem}\n\n"
+                "Candidate code:\n"
+                "```rust\n"
+                f"{failed_code}\n"
+                "```\n\n"
+                "Feedback:\n"
+                f"{feedback}"
+            )
+        elif problem:
+            user_content = problem
+        else:
+            user_content = _to_text(row.get("input") or row.get("prompt") or "")
+        assistant_content = _to_text(
+            row.get("solution")
+            or row.get("corrected_code")
+            or row.get("output")
+            or row.get("completion")
+            or row.get("response")
+            or ""
+        ).strip()
+
+    return {
+        "id": row_id,
+        "prompt": [
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": user_content.strip()},
+        ],
+        "completion": [{"role": "assistant", "content": assistant_content}],
+        "metadata": merged_metadata,
+    }
 
 
 
@@ -644,12 +798,45 @@ def main() -> None:
             make_dataset_row(
                 record=record,
                 stats=stats,
-                output_format=args.output_format,
-                problem_field=args.problem_field,
-                solution_field=args.solution_field,
                 system_prompt=args.system_prompt,
             )
         )
+
+    base_ids = {record.sample_id for record in filtered_records}
+    extra_dataset_summary: List[Dict[str, Any]] = []
+    for dataset_path_str in args.extra_datasets:
+        dataset_path = Path(dataset_path_str)
+        if not dataset_path.exists():
+            print(f"Warning: extra dataset not found: {dataset_path}", file=sys.stderr)
+            extra_dataset_summary.append(
+                {
+                    "path": str(dataset_path),
+                    "loaded": 0,
+                    "kept": 0,
+                    "dropped": 0,
+                    "converted": 0,
+                    "error": "not_found",
+                }
+            )
+            continue
+
+        loaded_rows = load_extra_dataset(dataset_path)
+        kept_rows, dropped_count = filter_by_base_ids(loaded_rows, base_ids)
+        converted_rows = [convert_to_conversational(row, args.system_prompt) for row in kept_rows]
+        dataset_rows.extend(converted_rows)
+        extra_dataset_summary.append(
+            {
+                "path": str(dataset_path),
+                "loaded": len(loaded_rows),
+                "kept": len(kept_rows),
+                "dropped": dropped_count,
+                "converted": len(converted_rows),
+            }
+        )
+
+    rng = random.Random(42)
+    dataset_rows = cap_type_fraction(dataset_rows, "repair", args.max_repair_fraction, rng)
+    dataset_rows = cap_type_fraction(dataset_rows, "critique", args.max_critique_fraction, rng)
 
     dataset_path = output_dir / args.dataset_name
     summary_path = output_dir / "summary.json"
@@ -743,6 +930,16 @@ def main() -> None:
     total_line_values = [row.total_lines for row in file_stats_rows]
     non_empty_line_values = [row.non_empty_lines for row in file_stats_rows]
     code_line_values = [row.code_lines for row in file_stats_rows]
+    repair_rows_in_output = sum(
+        1
+        for row in dataset_rows
+        if isinstance(row.get("metadata"), dict) and row["metadata"].get("type") == "repair"
+    )
+    critique_rows_in_output = sum(
+        1
+        for row in dataset_rows
+        if isinstance(row.get("metadata"), dict) and row["metadata"].get("type") == "critique"
+    )
 
     summary = {
         "input": {
@@ -753,7 +950,7 @@ def main() -> None:
             "solution_suffix": args.solution_suffix,
             "encoding": args.encoding,
             "tokenizer": args.model_name,
-            "output_format": args.output_format,
+            "output_format": "conversational",
         },
         "counts": {
             "paired_examples_before_dedup": len(records),
@@ -762,6 +959,10 @@ def main() -> None:
             "missing_problems": len(missing_problems),
             "duplicate_problem_groups": len(duplicate_groups),
             "filtered_duplicate_samples": 0 if args.keep_duplicates else sum(len(group.dropped_ids) for group in duplicate_groups),
+            "extra_rows_added": sum(item.get("converted", 0) for item in extra_dataset_summary),
+            "total_dataset_rows": len(dataset_rows),
+            "repair_rows_in_output": repair_rows_in_output,
+            "critique_rows_in_output": critique_rows_in_output,
         },
         "missing_pairs": {
             "missing_solutions_ids": missing_solutions,
@@ -785,6 +986,7 @@ def main() -> None:
             "top_full_paths": full_hist_rows[:100],
             "top_terminal_items": terminal_hist_rows[:100],
         },
+        "extra_datasets": extra_dataset_summary,
         "artifacts": {
             "dataset_jsonl": str(dataset_path),
             "summary_json": str(summary_path),
@@ -802,24 +1004,26 @@ def main() -> None:
     print(f"Missing problems: {len(missing_problems)}")
     print(f"Missing solutions: {len(missing_solutions)}")
     print(f"Duplicate groups: {len(duplicate_groups)}")
+    print(f"Extra rows added: {sum(item.get('converted', 0) for item in extra_dataset_summary)}")
+    print(f"Final dataset rows: {len(dataset_rows)}")
+    print(
+        f"Repair rows: {repair_rows_in_output} / {len(dataset_rows)} "
+        f"({(repair_rows_in_output / len(dataset_rows) * 100) if dataset_rows else 0.0:.2f}%)"
+    )
+    print(
+        f"Critique rows: {critique_rows_in_output} / {len(dataset_rows)} "
+        f"({(critique_rows_in_output / len(dataset_rows) * 100) if dataset_rows else 0.0:.2f}%)"
+    )
     print(f"Total code tokens: {summary['tokens']['total_code_tokens']}")
     print("\nTop windows imports (full paths):")
     for row in full_hist_rows[: args.preview_top_n]:
         print(f"  {row['occurrences']:>6}  {row['windows_import_path']}")
 
-    if args.output_format == "pair":
-        print(
-            "\nTraining command example:\n"
-            f"  accelerate launch train_qwen_rust_sft.py --train-file {dataset_path} "
-            f"--output-dir outputs/qwen25-coder-rust-7b-qlora "
-            f"--user-field {args.problem_field} --assistant-field {args.solution_field} --use-4bit"
-        )
-    else:
-        print(
-            "\nTraining command example:\n"
-            f"  accelerate launch train_qwen_rust_sft.py --train-file {dataset_path} "
-            f"--output-dir outputs/qwen25-coder-rust-7b-qlora --use-4bit"
-        )
+    print(
+        "\nTraining command example:\n"
+        f"  accelerate launch train_qwen_rust_sft.py --train-file {dataset_path} "
+        f"--output-dir outputs/qwen25-coder-rust-7b-qlora --use-4bit"
+    )
 
 
 if __name__ == "__main__":
