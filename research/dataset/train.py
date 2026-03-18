@@ -132,7 +132,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--warmup-ratio", type=float, default=0.03)
+    parser.add_argument(
+        "--warmup-steps",
+        type=float,
+        default=0.03,
+        help="Warmup steps as an absolute int or ratio float (<1.0).",
+    )
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--num-train-epochs", type=float, default=3.0)
     parser.add_argument("--lr-scheduler-type", type=str, default="cosine")
@@ -275,6 +280,8 @@ def preprocess_dataset(
     user_field: str,
     assistant_field: str,
     system_prompt: str,
+    tokenizer: Any,
+    max_length: int,
     num_proc: Optional[int] = None,
 ) -> Dataset:
     original_columns = dataset.column_names
@@ -288,6 +295,21 @@ def preprocess_dataset(
         remove_columns=original_columns,
         num_proc=num_proc,
         desc="Preprocessing dataset into conversational prompt-completion format",
+    )
+    max_tokens_with_buffer = max_length - 10
+    processed = processed.filter(
+        lambda example: len(
+            tokenizer.apply_chat_template(
+                [
+                    {"role": str(msg.get("role", "")), "content": str(msg.get("content", ""))}
+                    for msg in [*example.get("prompt", []), *example.get("completion", [])]
+                ],
+                tokenize=True,
+                add_generation_prompt=False,
+            )
+        )
+        <= max_tokens_with_buffer,
+        desc="Dropping rows that exceed max sequence length",
     )
     return processed
 
@@ -433,12 +455,24 @@ def main() -> None:
     else:
         datasets = DatasetDict(train=train_raw)
 
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name,
+        trust_remote_code=args.trust_remote_code,
+        use_fast=True,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
     # Preprocess into conversational prompt-completion format.
     datasets["train"] = preprocess_dataset(
         datasets["train"],
         user_field=args.user_field,
         assistant_field=args.assistant_field,
         system_prompt=args.system_prompt,
+        tokenizer=tokenizer,
+        max_length=args.max_length,
         num_proc=args.dataset_num_proc,
     )
     datasets["train"] = maybe_shuffle_dataset(datasets["train"], seed=args.seed, enabled=args.shuffle_train)
@@ -457,6 +491,8 @@ def main() -> None:
             user_field=args.user_field,
             assistant_field=args.assistant_field,
             system_prompt=args.system_prompt,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
             num_proc=args.dataset_num_proc,
         )
 
@@ -466,20 +502,7 @@ def main() -> None:
     print(f"FIM-augmented rows added: {fim_augmented_rows_added}")
     if "validation" in datasets:
         print(f"Validation rows: {count_rows(datasets['validation'])}")
-    print("Sample row:")
-    for sample in sample_preview(datasets["train"], n=1):
-        print(json.dumps(sample, ensure_ascii=False, indent=2)[:4000])
     print("=" * 80)
-
-    # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name,
-        trust_remote_code=args.trust_remote_code,
-        use_fast=True,
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
 
     # Precision / quantization
     use_bf16, use_fp16, compute_dtype = infer_precision(disable_bf16=args.disable_bf16)
@@ -526,7 +549,7 @@ def main() -> None:
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        warmup_ratio=args.warmup_ratio,
+        warmup_steps=args.warmup_steps,
         max_grad_norm=args.max_grad_norm,
         num_train_epochs=args.num_train_epochs,
         lr_scheduler_type=args.lr_scheduler_type,
