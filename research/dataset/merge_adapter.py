@@ -3,7 +3,7 @@ from peft import PeftModel
 import torch
 
 base_model = "Qwen/Qwen2.5-Coder-7B-Instruct"
-adapter_dir = r"outputs/qwen25-coder-rust-7b-qlora"
+adapter_dir = r"outputs/qwen25-coder-rust-7b-qlora/checkpoint-240"
 merged_dir = r"merged_qwen25_coder_rust_7b"
 
 tokenizer = AutoTokenizer.from_pretrained(base_model)

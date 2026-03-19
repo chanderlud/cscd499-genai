@@ -1,3 +1,0 @@
-Implement tests for the problem below, they must validate the function without making destructive changes or interfering with other tests. edge cases should be checked, and the real functionality on the system must be verified when possible. The tests must only target windows, any windows API types must be imported from the windows crate v0.62.2. do not worry about implementing tests for other platforms or gating, the code will only be executed on windows targets
-
-{{PROBLEM}}
