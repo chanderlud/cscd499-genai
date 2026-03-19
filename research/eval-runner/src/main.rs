@@ -17,6 +17,7 @@ use tokio::time::sleep;
 
 const CARGO_DEPENDENCIES: &str = include_str!("../../rust_dependencies.md");
 const MAX_RETRIES: usize = 10;
+const MAX_EMPTY_RETRIES: usize = 5;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "rust-eval-runner")]
@@ -130,6 +131,8 @@ struct AttemptReport {
     generation_error: Option<String>,
     eval: Option<EvaluateResponse>,
     eval_error: Option<String>,
+    retries: usize,
+    finish_reason: Option<String>,
 }
 
 /// Your evaluation API request
@@ -215,7 +218,7 @@ struct OrChoice {
 #[derive(Deserialize)]
 struct OrMessage {
     role: String,
-    content: String,
+    content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -256,7 +259,7 @@ async fn main() -> Result<()> {
     let problems = load_problems(&cli.problems)?;
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(240))
         .build()
         .context("build reqwest client")?;
 
@@ -391,7 +394,13 @@ async fn run_attempt(
     user_prompt: &str,
     tests: &str,
 ) -> Result<AttemptReport> {
-    let mut retries = 0;
+    let mut api_retries = 0usize;
+    let mut empty_retries = 0usize;
+    let mut last_finish_reason: Option<String> = None;
+    let mut prompt_suffix = String::new();
+    let mut length_retry_boost_pending = false;
+    let mut used_length_retry_boost = false;
+    let mut stop_empty_retries = 0usize;
     let mut out = AttemptReport {
         attempt,
         prompt: cli.save_artifacts.then(|| user_prompt.to_string()),
@@ -399,25 +408,49 @@ async fn run_attempt(
         generation_error: None,
         eval: None,
         eval_error: None,
+        retries: 0,
+        finish_reason: None,
     };
 
     let output = loop {
         // 1) Generate with OpenRouter
-        let raw_text = match openrouter_chat(client, cli, system_prompt, user_prompt).await {
-            Ok(t) => t,
+        let request_prompt = format!("{user_prompt}{prompt_suffix}");
+        let temp_override = Some((cli.temperature + (empty_retries as f32 * 0.05)).min(1.0));
+        let max_tokens_override = if length_retry_boost_pending && !used_length_retry_boost {
+            used_length_retry_boost = true;
+            length_retry_boost_pending = false;
+            Some(cli.max_tokens.saturating_mul(2))
+        } else {
+            None
+        };
+
+        let (raw_text, finish_reason) = match openrouter_chat(
+            client,
+            cli,
+            system_prompt,
+            &request_prompt,
+            temp_override,
+            max_tokens_override,
+        )
+        .await
+        {
+            Ok(result) => result,
             Err(e) => {
                 println!("{}", e);
-                if retries > MAX_RETRIES {
+                if api_retries >= MAX_RETRIES {
                     out.generation_error = Some(e.to_string());
+                    out.retries = api_retries + empty_retries;
+                    out.finish_reason = last_finish_reason;
                     return Ok(out);
                 } else {
-                    retries += 1;
+                    api_retries += 1;
                     sleep(Duration::from_secs(1)).await;
                     continue;
                 }
             }
         };
 
+        last_finish_reason = finish_reason.clone();
         if cli.save_artifacts {
             out.raw_model_text = Some(raw_text.clone());
         }
@@ -425,12 +458,37 @@ async fn run_attempt(
         let extracted = extract_rust_code(&raw_text);
 
         if extracted.is_none() {
-            if retries > MAX_RETRIES {
+            if finish_reason.as_deref() == Some("content_filter") {
+                eprintln!("model output blocked by content filter; not retrying this attempt");
+                out.eval_error = Some("blocked by content filter".to_string());
+                out.retries = api_retries + empty_retries;
+                out.finish_reason = last_finish_reason;
+                return Ok(out);
+            }
+
+            if finish_reason.as_deref() == Some("length") {
+                eprintln!("model output ended due to token length with empty content");
+                length_retry_boost_pending = true;
+                stop_empty_retries = 0;
+            } else if finish_reason.as_deref() == Some("stop") {
+                stop_empty_retries += 1;
+                if stop_empty_retries >= 3 {
+                    prompt_suffix =
+                        "\n\nPlease provide the complete Rust implementation.".to_string();
+                }
+            } else {
+                stop_empty_retries = 0;
+            }
+
+            if empty_retries >= MAX_EMPTY_RETRIES {
                 out.eval_error = Some("empty model output".to_string());
+                out.retries = api_retries + empty_retries;
+                out.finish_reason = last_finish_reason;
                 return Ok(out);
             } else {
-                retries += 1;
-                sleep(Duration::from_secs(1)).await;
+                empty_retries += 1;
+                let sleep_secs = (1u64 << (empty_retries - 1)).min(30);
+                sleep(Duration::from_secs(sleep_secs)).await;
                 continue;
             }
         } else {
@@ -457,6 +515,8 @@ async fn run_attempt(
         }
     }
 
+    out.retries = api_retries + empty_retries;
+    out.finish_reason = last_finish_reason;
     Ok(out)
 }
 
@@ -582,7 +642,9 @@ async fn openrouter_chat(
     cli: &Cli,
     system_prompt: Option<&str>,
     user_prompt: &str,
-) -> Result<String> {
+    temperature_override: Option<f32>,
+    max_tokens_override: Option<u32>,
+) -> Result<(String, Option<String>)> {
     let url = format!("{}/chat/completions", cli.openrouter_base.trim_end_matches('/'));
 
     let mut headers = HeaderMap::new();
@@ -611,8 +673,8 @@ async fn openrouter_chat(
     let body = json!({
         "model": cli.model,
         "messages": messages,
-        "temperature": cli.temperature,
-        "max_tokens": cli.max_tokens
+        "temperature": temperature_override.unwrap_or(cli.temperature),
+        "max_tokens": max_tokens_override.unwrap_or(cli.max_tokens)
     });
 
     let resp = client
@@ -636,10 +698,27 @@ async fn openrouter_chat(
     let content = parsed
         .choices
         .first()
-        .map(|c| c.message.content.clone())
+        .map(|c| c.message.content.clone().unwrap_or_default())
         .ok_or_else(|| anyhow!("OpenRouter response had no choices[0].message.content"))?;
+    let finish_reason = parsed
+        .choices
+        .first()
+        .and_then(|c| c.finish_reason.clone());
 
-    Ok(content)
+    if content.is_empty() {
+        let usage = parsed.usage.as_ref();
+        eprintln!(
+            "OpenRouter empty content; finish_reason={:?}; model={:?}; usage(prompt={:?}, completion={:?}, total={:?}); raw={}",
+            finish_reason,
+            parsed.model,
+            usage.and_then(|u| u.prompt_tokens),
+            usage.and_then(|u| u.completion_tokens),
+            usage.and_then(|u| u.total_tokens),
+            text
+        );
+    }
+
+    Ok((content, finish_reason))
 }
 
 async fn eval_code(client: &reqwest::Client, cli: &Cli, gen: &str) -> Result<EvaluateResponse> {
