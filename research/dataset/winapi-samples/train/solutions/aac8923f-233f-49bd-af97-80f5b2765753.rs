@@ -1,13 +1,13 @@
-use windows::core::{Error, Result, HRESULT};
+use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Security::Cryptography::*;
 
-struct HashHandle {
+pub struct HashHandle {
     handle: BCRYPT_HASH_HANDLE,
 }
 
 impl HashHandle {
-    fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             handle: BCRYPT_HASH_HANDLE::default(),
         })
@@ -22,12 +22,12 @@ impl Drop for HashHandle {
     }
 }
 
-struct HkdfSha256 {
+pub struct HkdfSha256 {
     algorithm: BCRYPT_ALG_HANDLE,
 }
 
 impl HkdfSha256 {
-    fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let mut algorithm = BCRYPT_ALG_HANDLE::default();
 
         unsafe {
@@ -43,10 +43,9 @@ impl HkdfSha256 {
         Ok(Self { algorithm })
     }
 
-    fn extract(&self, salt: &[u8], ikm: &[u8]) -> Result<Vec<u8>> {
-        // RFC 5869: If salt is empty, use HashLen zeros
+    pub fn extract(&self, salt: &[u8], ikm: &[u8]) -> Result<Vec<u8>> {
         let effective_salt = if salt.is_empty() {
-            vec![0u8; 32] // SHA-256 hash length
+            vec![0u8; 32]
         } else {
             salt.to_vec()
         };
@@ -54,10 +53,9 @@ impl HkdfSha256 {
         self.hmac_sha256(&effective_salt, ikm)
     }
 
-    fn expand(&self, prk: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>> {
-        const HASH_LEN: usize = 32; // SHA-256
+    pub fn expand(&self, prk: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>> {
+        const HASH_LEN: usize = 32;
 
-        // RFC 5869: Check output length limit
         if length > 255 * HASH_LEN {
             return Err(Error::from_hresult(E_INVALIDARG));
         }
@@ -67,7 +65,6 @@ impl HkdfSha256 {
         let mut counter: u8 = 1;
 
         while output.len() < length {
-            // T(i) = HMAC-Hash(PRK, T(i-1) || info || i)
             let mut data = Vec::new();
             data.extend_from_slice(&t);
             data.extend_from_slice(info);
@@ -76,20 +73,20 @@ impl HkdfSha256 {
             t = self.hmac_sha256(prk, &data)?;
             output.extend_from_slice(&t);
 
-            counter = counter
-                .checked_add(1)
-                .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+            counter = counter.wrapping_add(1);
+            if counter == 0 {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
         }
 
         output.truncate(length);
         Ok(output)
     }
 
-    fn hmac_sha256(&self, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    pub fn hmac_sha256(&self, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
         let mut hash_handle = HashHandle::new()?;
 
         unsafe {
-            // Create HMAC with key
             BCryptCreateHash(
                 self.algorithm,
                 &mut hash_handle.handle,
@@ -99,12 +96,10 @@ impl HkdfSha256 {
             )
             .ok()?;
 
-            // Hash the data
             if !data.is_empty() {
                 BCryptHashData(hash_handle.handle, data, 0).ok()?;
             }
 
-            // Get hash length
             let mut hash_length_bytes = [0u8; 4];
             let mut result_length = 0u32;
             BCryptGetProperty(
@@ -118,7 +113,6 @@ impl HkdfSha256 {
 
             let hash_length = u32::from_le_bytes(hash_length_bytes);
 
-            // Finish hash and get result
             let mut hash_result = vec![0u8; hash_length as usize];
             BCryptFinishHash(hash_handle.handle, &mut hash_result, 0).ok()?;
 
@@ -133,4 +127,15 @@ impl Drop for HkdfSha256 {
             let _ = BCryptCloseAlgorithmProvider(self.algorithm, 0);
         }
     }
+}
+
+pub fn hkdf_sha256_extract_and_expand(
+    salt: &[u8],
+    ikm: &[u8],
+    info: &[u8],
+    length: usize,
+) -> Result<Vec<u8>> {
+    let hkdf = HkdfSha256::new()?;
+    let prk = hkdf.extract(salt, ikm)?;
+    hkdf.expand(&prk, info, length)
 }

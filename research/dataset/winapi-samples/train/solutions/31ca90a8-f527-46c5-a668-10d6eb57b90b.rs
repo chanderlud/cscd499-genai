@@ -1,5 +1,5 @@
 use windows::core::Result;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
 fn main() -> Result<()> {

@@ -11,8 +11,6 @@ use windows::Win32::Storage::FileSystem::{
     OPEN_EXISTING,
 };
 
-const BUFFER_SIZE: usize = 4096;
-
 struct Algorithm {
     handle: BCRYPT_ALG_HANDLE,
 }
@@ -126,7 +124,7 @@ impl Drop for FileHandle {
 fn verify_file_hash(file_path: &Path, expected_hash: &[u8], algorithm: &Algorithm) -> Result<bool> {
     let file = FileHandle::open(file_path)?;
     let mut hash = Hash::new(algorithm)?;
-    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut buffer = vec![0u8; 4096];
 
     loop {
         let bytes_read = file.read_chunk(&mut buffer)?;
@@ -143,4 +141,15 @@ fn verify_file_hash(file_path: &Path, expected_hash: &[u8], algorithm: &Algorith
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
     use std::{iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(once(0)).collect()
+}
+
+fn main() -> Result<()> {
+    let file_path = "example.txt";
+    let expected_hash = [0u8; 32];
+
+    let algorithm = Algorithm::new("SHA256")?;
+    let result = verify_file_hash(Path::new(file_path), &expected_hash, &algorithm)?;
+
+    println!("Hash verification result: {}", result);
+    Ok(())
 }

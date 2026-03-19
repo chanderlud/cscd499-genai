@@ -10,15 +10,16 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
-                PostQuitMessage, RegisterClassW, TranslateMessage, CW_USEDEFAULT, HICON,
-                IDI_APPLICATION, MSG, WM_DESTROY, WM_USER, WNDCLASSW,
+                PostQuitMessage, RegisterClassW, TranslateMessage, CW_USEDEFAULT, IDI_APPLICATION,
+                MSG, WM_DESTROY, WM_USER, WNDCLASSW,
             },
         },
     },
 };
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
     s.encode_wide().chain(once(0)).collect()
 }
 
@@ -83,7 +84,7 @@ fn main() -> Result<()> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 

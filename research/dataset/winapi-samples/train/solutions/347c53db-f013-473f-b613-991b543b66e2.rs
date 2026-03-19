@@ -1,15 +1,14 @@
+use std::os::windows::ffi::OsStrExt;
 use windows::core::{Error, Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Security::Cryptography::*;
 
-fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
-    s.encode_wide().chain(once(0)).collect()
+pub fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
+    s.encode_wide().chain(std::iter::once(0)).collect()
 }
 
-fn open_aes_provider() -> Result<BCRYPT_ALG_HANDLE> {
+pub fn open_aes_provider() -> Result<BCRYPT_ALG_HANDLE> {
     let mut handle = BCRYPT_ALG_HANDLE::default();
-    // SAFETY: BCryptOpenAlgorithmProvider is a valid Win32 call with proper parameters
     let status = unsafe {
         BCryptOpenAlgorithmProvider(
             &mut handle,
@@ -24,14 +23,12 @@ fn open_aes_provider() -> Result<BCRYPT_ALG_HANDLE> {
     Ok(handle)
 }
 
-fn set_gcm_mode(alg_handle: BCRYPT_ALG_HANDLE) -> Result<()> {
+pub fn set_gcm_mode(alg_handle: BCRYPT_ALG_HANDLE) -> Result<()> {
     let mode = wide_null("ChainingModeGCM".as_ref());
-    // Convert UTF-16 to bytes for property value
     let mode_bytes: Vec<u8> = mode.iter().flat_map(|&c| c.to_le_bytes()).collect();
-    // SAFETY: BCryptSetProperty is a valid Win32 call with proper parameters
     let status = unsafe {
         BCryptSetProperty(
-            alg_handle.into(), // Convert to BCRYPT_HANDLE
+            alg_handle.into(),
             PCWSTR(wide_null("ChainingMode".as_ref()).as_ptr()),
             &mode_bytes,
             0,
@@ -43,9 +40,8 @@ fn set_gcm_mode(alg_handle: BCRYPT_ALG_HANDLE) -> Result<()> {
     Ok(())
 }
 
-fn create_key_handle(alg_handle: BCRYPT_ALG_HANDLE, key: &[u8]) -> Result<BCRYPT_KEY_HANDLE> {
+pub fn create_key_handle(alg_handle: BCRYPT_ALG_HANDLE, key: &[u8]) -> Result<BCRYPT_KEY_HANDLE> {
     let mut key_handle = BCRYPT_KEY_HANDLE::default();
-    // SAFETY: BCryptGenerateSymmetricKey is a valid Win32 call with proper parameters
     let status = unsafe { BCryptGenerateSymmetricKey(alg_handle, &mut key_handle, None, key, 0) };
     if status.is_err() {
         return Err(Error::from_hresult(HRESULT::from_win32(status.0 as u32)));
@@ -53,13 +49,12 @@ fn create_key_handle(alg_handle: BCRYPT_ALG_HANDLE, key: &[u8]) -> Result<BCRYPT
     Ok(key_handle)
 }
 
-fn aes_gcm_encrypt(
+pub fn aes_gcm_encrypt(
     key: &[u8],
     nonce: &[u8],
     plaintext: &[u8],
     aad: Option<&[u8]>,
 ) -> Result<(Vec<u8>, [u8; 16])> {
-    // Validate inputs
     if nonce.len() != 12 {
         return Err(Error::from_hresult(E_INVALIDARG));
     }
@@ -74,13 +69,14 @@ fn aes_gcm_encrypt(
     set_gcm_mode(alg_handle)?;
     let key_handle = create_key_handle(alg_handle, key)?;
 
-    // Setup auth info structure
-    let mut auth_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-    auth_info.cbSize = std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32;
-    auth_info.dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
-    auth_info.pbNonce = nonce.as_ptr() as *mut u8;
-    auth_info.cbNonce = nonce.len() as u32;
-    auth_info.cbTag = 16;
+    let mut auth_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+        cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+        dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+        pbNonce: nonce.as_ptr() as *mut u8,
+        cbNonce: nonce.len() as u32,
+        cbTag: 16,
+        ..Default::default()
+    };
 
     if let Some(aad_data) = aad {
         auth_info.pbAuthData = aad_data.as_ptr() as *mut u8;
@@ -92,7 +88,6 @@ fn aes_gcm_encrypt(
     let mut tag = [0u8; 16];
     auth_info.pbTag = tag.as_mut_ptr();
 
-    // SAFETY: BCryptEncrypt is a valid Win32 call with proper parameters
     let status = unsafe {
         BCryptEncrypt(
             key_handle,
@@ -105,11 +100,8 @@ fn aes_gcm_encrypt(
         )
     };
 
-    // Cleanup handles
-    // SAFETY: BCryptDestroyKey is a valid Win32 call with proper handle
-    unsafe { BCryptDestroyKey(key_handle) };
-    // SAFETY: BCryptCloseAlgorithmProvider is a valid Win32 call with proper handle
-    unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+    let _ = unsafe { BCryptDestroyKey(key_handle) };
+    let _ = unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
 
     if status.is_err() {
         return Err(Error::from_hresult(HRESULT::from_win32(status.0 as u32)));
@@ -119,14 +111,13 @@ fn aes_gcm_encrypt(
     Ok((ciphertext, tag))
 }
 
-fn aes_gcm_decrypt(
+pub fn aes_gcm_decrypt(
     key: &[u8],
     nonce: &[u8],
     ciphertext: &[u8],
     tag: &[u8; 16],
     aad: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    // Validate inputs
     if nonce.len() != 12 {
         return Err(Error::from_hresult(E_INVALIDARG));
     }
@@ -141,14 +132,15 @@ fn aes_gcm_decrypt(
     set_gcm_mode(alg_handle)?;
     let key_handle = create_key_handle(alg_handle, key)?;
 
-    // Setup auth info structure
-    let mut auth_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-    auth_info.cbSize = std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32;
-    auth_info.dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
-    auth_info.pbNonce = nonce.as_ptr() as *mut u8;
-    auth_info.cbNonce = nonce.len() as u32;
-    auth_info.cbTag = tag.len() as u32;
-    auth_info.pbTag = tag.as_ptr() as *mut u8;
+    let mut auth_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+        cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+        dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+        pbNonce: nonce.as_ptr() as *mut u8,
+        cbNonce: nonce.len() as u32,
+        cbTag: tag.len() as u32,
+        pbTag: tag.as_ptr() as *mut u8,
+        ..Default::default()
+    };
 
     if let Some(aad_data) = aad {
         auth_info.pbAuthData = aad_data.as_ptr() as *mut u8;
@@ -158,7 +150,6 @@ fn aes_gcm_decrypt(
     let mut plaintext = vec![0u8; ciphertext.len()];
     let mut result_len = 0u32;
 
-    // SAFETY: BCryptDecrypt is a valid Win32 call with proper parameters
     let status = unsafe {
         BCryptDecrypt(
             key_handle,
@@ -171,16 +162,11 @@ fn aes_gcm_decrypt(
         )
     };
 
-    // Cleanup handles
-    // SAFETY: BCryptDestroyKey is a valid Win32 call with proper handle
-    unsafe { BCryptDestroyKey(key_handle) };
-    // SAFETY: BCryptCloseAlgorithmProvider is a valid Win32 call with proper handle
-    unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+    let _ = unsafe { BCryptDestroyKey(key_handle) };
+    let _ = unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
 
     if status.is_err() {
-        // Check for authentication failure
         if status.0 == -1073700864 {
-            // STATUS_AUTH_TAG_MISMATCH
             return Err(Error::from_hresult(E_INVALIDARG));
         }
         return Err(Error::from_hresult(HRESULT::from_win32(status.0 as u32)));

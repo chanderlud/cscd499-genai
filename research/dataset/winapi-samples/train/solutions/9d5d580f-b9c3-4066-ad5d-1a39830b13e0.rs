@@ -131,7 +131,7 @@ fn watch_directory<const N: usize>(
         // Get the result of the overlapped operation
         let mut bytes_returned: u32 = 0;
         unsafe {
-            GetOverlappedResult(dir_handle, &mut overlapped, &mut bytes_returned, false)?;
+            GetOverlappedResult(dir_handle, &overlapped, &mut bytes_returned, false)?;
         }
 
         if bytes_returned == 0 {

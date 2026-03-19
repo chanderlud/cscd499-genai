@@ -41,7 +41,7 @@ pub fn final_path(path: &Path) -> Result<PathBuf> {
     struct HandleGuard(HANDLE);
     impl Drop for HandleGuard {
         fn drop(&mut self) {
-            unsafe { CloseHandle(self.0) };
+            let _ = unsafe { CloseHandle(self.0) };
         }
     }
     let _guard = HandleGuard(handle);

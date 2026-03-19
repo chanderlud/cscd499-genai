@@ -75,7 +75,7 @@ pub fn reverse_file_chunks(src_path: &str, dst_path: &str) -> Result<()> {
     // Ensure handles are closed on any error
     let result = (|| {
         let file_size = get_file_size(src_handle)?;
-        let total_chunks = (file_size as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let total_chunks = (file_size as usize).div_ceil(CHUNK_SIZE);
 
         let mut buffer = vec![0u8; CHUNK_SIZE];
 

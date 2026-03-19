@@ -1,5 +1,5 @@
 use windows::core::Result;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, VIRTUAL_KEY, VK_CAPITAL};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, VK_CAPITAL};
 
 fn main() -> Result<()> {
     let kbd_state = get_kbd_state()?;

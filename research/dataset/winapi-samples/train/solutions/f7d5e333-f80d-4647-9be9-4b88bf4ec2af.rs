@@ -6,7 +6,7 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_RSA_ALGORITHM,
 };
 
-fn generate_rsa_keypair(bit_length: u32) -> Result<(Vec<u8>, Vec<u8>)> {
+pub fn generate_rsa_keypair(bit_length: u32) -> Result<(Vec<u8>, Vec<u8>)> {
     // Helper to export a key blob
     fn export_key_blob(key_handle: BCRYPT_KEY_HANDLE, blob_type: PCWSTR) -> Result<Vec<u8>> {
         let mut size = 0u32;

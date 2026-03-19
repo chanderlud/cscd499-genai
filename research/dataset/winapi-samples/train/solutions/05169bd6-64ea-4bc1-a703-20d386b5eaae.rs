@@ -90,3 +90,24 @@ fn import_dsa_private_key(
 
     Ok(Owned(key_handle))
 }
+
+// Added a main function to use the import_dsa_private_key function
+fn main() -> Result<()> {
+    // Example usage - replace with actual parameters
+    let alg_handle = BCRYPT_ALG_HANDLE::default(); // This should be obtained from BCryptOpenAlgorithmProvider
+    let prime_modulus = vec![0u8; 256];
+    let prime_divisor = vec![0u8; 20];
+    let generator = vec![0u8; 256];
+    let private_key = vec![0u8; 20];
+
+    let _key = import_dsa_private_key(
+        alg_handle,
+        &prime_modulus,
+        &prime_divisor,
+        &generator,
+        &private_key,
+    )?;
+    // Use the key...
+
+    Ok(())
+}

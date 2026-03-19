@@ -1,7 +1,9 @@
 use std::mem::zeroed;
 use std::ptr::null_mut;
 use windows::core::{Error, Result, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, FALSE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint,
     GetDC, ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
@@ -48,13 +50,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
-            let _hdc = BeginPaint(hwnd, &mut ps);
+            let hdc = BeginPaint(hwnd, &mut ps);
+            if hdc.is_invalid() {
+                return LRESULT(0);
+            }
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OverlayData;
             if !data_ptr.is_null() {
                 let data = &*data_ptr;
                 let _ = update_magnifier(hwnd, data);
             }
-            EndPaint(hwnd, &ps);
+            let result = EndPaint(hwnd, &ps);
+            if result == FALSE {
+                return LRESULT(0);
+            }
             LRESULT(0)
         }
         WM_TIMER => {
@@ -210,7 +218,9 @@ pub fn create_magnifier_overlay(
         // Set timer for continuous updates
         SetTimer(Some(hwnd), TIMER_ID, TIMER_INTERVAL_MS, None);
 
-        ShowWindow(hwnd, SW_SHOW);
+        if ShowWindow(hwnd, SW_SHOW) == FALSE {
+            return Err(Error::from_thread());
+        }
 
         Ok(hwnd)
     }

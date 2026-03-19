@@ -13,9 +13,9 @@ use windows::Win32::System::Memory::{
 
 fn to_wide_fixed(path: &Path, buf: &mut [u16; 260]) -> io::Result<PCWSTR> {
     let os_str = path.as_os_str();
-    let mut iter = os_str.encode_wide();
+    let iter = os_str.encode_wide();
     let mut i = 0;
-    while let Some(w) = iter.next() {
+    for w in iter {
         if i >= buf.len() - 1 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Path too long"));
         }

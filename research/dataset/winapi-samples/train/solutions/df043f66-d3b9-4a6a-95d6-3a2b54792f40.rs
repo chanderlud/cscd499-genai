@@ -56,3 +56,9 @@ fn generate_random_bytes(len: usize) -> Result<Vec<u8>> {
 
     result
 }
+
+fn main() -> Result<()> {
+    let random_bytes = generate_random_bytes(32)?;
+    println!("Generated {} random bytes", random_bytes.len());
+    Ok(())
+}

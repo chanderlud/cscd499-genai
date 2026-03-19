@@ -1,7 +1,7 @@
 use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PARTIAL_COPY, ERROR_PROC_NOT_FOUND,
-    HANDLE, MAX_PATH, UNICODE_STRING,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PARTIAL_COPY, ERROR_PROC_NOT_FOUND, HANDLE, MAX_PATH,
+    UNICODE_STRING,
 };
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::ProcessStatus::{K32EnumProcesses, K32GetModuleFileNameExW};

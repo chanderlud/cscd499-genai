@@ -75,7 +75,7 @@ fn main() -> Result<()> {
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.into() {
         // SAFETY: TranslateMessage and DispatchMessageW are safe with valid MSG
         unsafe {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }

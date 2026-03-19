@@ -1,6 +1,6 @@
 use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::Input::Ime::{ImmGetDefaultIMEWnd, IMC_SETCONVERSIONMODE};
+use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SendMessageA, WM_IME_CONTROL};
 
 pub fn set_conversion_mode(mode: u32) -> Result<()> {

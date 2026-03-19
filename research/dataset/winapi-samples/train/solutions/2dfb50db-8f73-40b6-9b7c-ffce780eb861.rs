@@ -5,14 +5,6 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_ALG_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
 };
 
-// Define the constant locally since it's not in the windows crate
-const BCRYPT_FIPS_ALGORITHM_FLAG: u32 = 0x00000002;
-
-fn wide_null(s: &str) -> Vec<u16> {
-    use std::iter::once;
-    s.encode_utf16().chain(once(0)).collect()
-}
-
 fn check_fips_algorithm_support(algorithm_id: &str) -> Result<(bool, bool)> {
     // Check system FIPS mode status
     let mut fips_enabled: u8 = 0;
@@ -24,7 +16,13 @@ fn check_fips_algorithm_support(algorithm_id: &str) -> Result<(bool, bool)> {
     let fips_mode_enabled = fips_enabled != 0;
 
     // Check if algorithm is FIPS-approved
-    let alg_id_wide = wide_null(algorithm_id);
+    let alg_id_wide = {
+        use std::iter::once;
+        algorithm_id
+            .encode_utf16()
+            .chain(once(0))
+            .collect::<Vec<u16>>()
+    };
     let mut alg_handle = BCRYPT_ALG_HANDLE::default();
 
     // SAFETY: BCryptOpenAlgorithmProvider is a valid CNG API call
@@ -33,13 +31,13 @@ fn check_fips_algorithm_support(algorithm_id: &str) -> Result<(bool, bool)> {
             &mut alg_handle,
             PCWSTR(alg_id_wide.as_ptr()),
             None,
-            BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(BCRYPT_FIPS_ALGORITHM_FLAG),
+            BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(0x00000002),
         )
     };
 
     let algorithm_is_fips_approved = if status == STATUS_SUCCESS {
         // SAFETY: We have a valid algorithm handle to close
-        unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+        let _ = unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
         true
     } else {
         // STATUS_INVALID_PARAMETER indicates algorithm not FIPS-approved
@@ -54,4 +52,11 @@ fn check_fips_algorithm_support(algorithm_id: &str) -> Result<(bool, bool)> {
     };
 
     Ok((fips_mode_enabled, algorithm_is_fips_approved))
+}
+
+fn main() {
+    if let Ok((fips_mode, is_approved)) = check_fips_algorithm_support("AES") {
+        println!("FIPS mode enabled: {}", fips_mode);
+        println!("Algorithm FIPS-approved: {}", is_approved);
+    }
 }

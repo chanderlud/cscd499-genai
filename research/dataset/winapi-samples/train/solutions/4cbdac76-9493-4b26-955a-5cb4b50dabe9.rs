@@ -1,9 +1,8 @@
 use std::ffi::OsStr;
 use std::sync::mpsc;
 use std::thread;
-use windows::core::{Error, Result, PCWSTR};
-use windows::Win32::Foundation::GENERIC_READ;
-use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+use windows::core::{Result, PCWSTR};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_MODE, OPEN_EXISTING,
 };

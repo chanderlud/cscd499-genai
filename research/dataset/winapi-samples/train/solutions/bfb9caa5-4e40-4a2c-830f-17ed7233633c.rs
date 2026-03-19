@@ -345,7 +345,7 @@ pub fn end_drag_resize(hwnd: HWND) -> Result<()> {
 
         unsafe {
             // Release mouse capture
-            ReleaseCapture();
+            let _ = ReleaseCapture();
 
             // Restore WS_EX_TRANSPARENT for click-through
             let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);

@@ -3,7 +3,7 @@ use windows::Win32::Foundation::ERROR_INVALID_FUNCTION;
 use windows::Win32::Security::Cryptography::{
     BCryptCloseAlgorithmProvider, BCryptGenRandom, BCryptGetFipsAlgorithmMode,
     BCryptOpenAlgorithmProvider, BCRYPTGENRANDOM_FLAGS, BCRYPT_ALG_HANDLE,
-    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_RNG_ALGORITHM, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_RNG_ALGORITHM,
 };
 
 struct AlgorithmHandle(BCRYPT_ALG_HANDLE);

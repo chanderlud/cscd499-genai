@@ -1,4 +1,3 @@
-use windows::core::{Error, Result};
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
@@ -6,11 +5,6 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::{
     GetThreadTimes, OpenThread, TerminateThread, THREAD_QUERY_INFORMATION, THREAD_TERMINATE,
 };
-
-fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
-    s.encode_wide().chain(once(0)).collect()
-}
 
 pub fn terminate_process_threads(process_id: u32) -> windows::core::Result<Vec<u32>> {
     // Create a snapshot of all threads in the system

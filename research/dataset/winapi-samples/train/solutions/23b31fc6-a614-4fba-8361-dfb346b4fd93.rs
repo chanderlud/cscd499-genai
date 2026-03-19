@@ -53,17 +53,17 @@ fn calculate_average_color(
 
         let hdc_mem = CreateCompatibleDC(Some(hdc));
         if hdc_mem.is_invalid() {
-            DeleteObject(hbitmap.into());
+            let _ = DeleteObject(hbitmap.into());
             return Err(Error::from_thread());
         }
 
         let old_bitmap = SelectObject(hdc_mem, hbitmap.into());
         let result = BitBlt(hdc_mem, 0, 0, width, height, Some(hdc), x, y, SRCCOPY);
-        if result.is_err() {
-            SelectObject(hdc_mem, old_bitmap);
-            DeleteObject(hbitmap.into());
-            DeleteDC(hdc_mem);
-            return Err(Error::from_hresult(result.unwrap_err().code()));
+        if let Err(err) = result {
+            let _ = SelectObject(hdc_mem, old_bitmap);
+            let _ = DeleteObject(hbitmap.into());
+            let _ = DeleteDC(hdc_mem);
+            return Err(Error::from_hresult(err.code()));
         }
 
         let lines = GetDIBits(
@@ -76,9 +76,9 @@ fn calculate_average_color(
             DIB_RGB_COLORS,
         );
 
-        SelectObject(hdc_mem, old_bitmap);
-        DeleteObject(hbitmap.into());
-        DeleteDC(hdc_mem);
+        let _ = SelectObject(hdc_mem, old_bitmap);
+        let _ = DeleteObject(hbitmap.into());
+        let _ = DeleteDC(hdc_mem);
 
         if lines == 0 {
             return Err(Error::from_thread());
@@ -136,7 +136,7 @@ fn sample_background_color(hwnd_overlay: HWND) -> Result<COLORREF> {
     }
 
     let result = calculate_average_color(hdc_target, sample_x, sample_y, SAMPLE_SIZE, SAMPLE_SIZE);
-    unsafe { ReleaseDC(Some(hwnd_target), hdc_target) };
+    unsafe { ReleaseDC(Some(hwnd_target), hdc_target) }; // Added unsafe block
 
     result
 }
@@ -204,8 +204,7 @@ pub fn create_adaptive_overlay(width: i32, height: i32) -> Result<HWND> {
     }
 
     unsafe {
-        ShowWindow(hwnd, SW_SHOW);
-        // Fixed: Convert BOOL to Result using .ok()
+        let _ = ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd).ok()?;
         let timer_id = SetTimer(Some(hwnd), TIMER_ID, SAMPLE_INTERVAL_MS, None);
         if timer_id == 0 {

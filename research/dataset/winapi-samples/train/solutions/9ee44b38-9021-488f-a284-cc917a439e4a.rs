@@ -10,7 +10,7 @@ fn get_message_box_addr() -> Result<usize> {
     let func_name = std::ffi::CString::new("MessageBoxA")
         .map_err(|_| Error::from_hresult(windows::core::HRESULT(0x80004005u32 as i32)))?;
     let addr = unsafe { GetProcAddress(module, PCSTR(func_name.as_ptr() as *const u8)) };
-    addr.ok_or_else(|| Error::from_thread()).map(|a| a as usize)
+    addr.ok_or_else(Error::from_thread).map(|a| a as usize)
 }
 
 fn main() -> Result<()> {

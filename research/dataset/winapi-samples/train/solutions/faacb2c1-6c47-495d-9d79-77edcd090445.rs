@@ -1,19 +1,12 @@
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
-use std::iter::once;
-use std::os::windows::ffi::OsStrExt;
-use windows::core::{Error, Result, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE};
+use windows::core::{Error, Result, HRESULT};
+use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
-
-fn wide_null(s: &OsStr) -> Vec<u16> {
-    s.encode_wide().chain(once(0)).collect()
-}
 
 fn get_process_id_by_name(process_name: &str) -> Result<u32> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }?;
@@ -71,7 +64,7 @@ pub fn log_process_memory_regions(process_name: &str, output_path: &str) -> Resu
         )
     }?;
 
-    let mut file = File::create(output_path).map_err(|e| {
+    let mut file = File::create(output_path).map_err(|_| {
         Error::from_hresult(HRESULT::from_win32(
             windows::Win32::Foundation::ERROR_CANNOT_MAKE.0,
         ))
@@ -106,7 +99,7 @@ pub fn log_process_memory_regions(process_name: &str, output_path: &str) -> Resu
                 "0x{:X} - 0x{:X} ({} bytes) Protection: {:X}",
                 base_address, end_address, region_size, protection
             )
-            .map_err(|e| {
+            .map_err(|_| {
                 Error::from_hresult(HRESULT::from_win32(
                     windows::Win32::Foundation::ERROR_WRITE_FAULT.0,
                 ))

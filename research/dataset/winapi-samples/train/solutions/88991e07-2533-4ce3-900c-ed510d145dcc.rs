@@ -5,7 +5,7 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_ALG_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, BCRYPT_SHA256_ALGORITHM,
 };
 
-fn derive_key_pbkdf2(
+pub fn derive_key_pbkdf2(
     password: &[u8],
     salt: &[u8],
     iterations: u32,
@@ -46,8 +46,11 @@ fn derive_key_pbkdf2(
     let result = derive_key_inner(alg_handle, password, salt, iterations, key_length);
 
     // SAFETY: BCryptCloseAlgorithmProvider is a valid Windows API call
-    unsafe {
-        BCryptCloseAlgorithmProvider(alg_handle, 0);
+    let close_status = unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+    if close_status.0 != 0 {
+        return Err(Error::from_hresult(HRESULT::from_win32(
+            close_status.0 as u32,
+        )));
     }
 
     result
@@ -80,4 +83,16 @@ fn derive_key_inner(
     }
 
     Ok(derived_key)
+}
+
+fn main() {
+    let password = b"password";
+    let salt = b"salt";
+    let iterations = 1000;
+    let key_length = 32;
+
+    match derive_key_pbkdf2(password, salt, iterations, key_length) {
+        Ok(key) => println!("Derived key: {:?}", key),
+        Err(e) => eprintln!("Error deriving key: {}", e),
+    }
 }

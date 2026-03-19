@@ -1,8 +1,6 @@
-// Dynamically load and use GetDpiForWindow function
-
 use std::iter::once;
 use std::os::windows::prelude::OsStrExt;
-use windows::core::{Error, Result, PCSTR, PCWSTR};
+use windows::core::{Result, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{FARPROC, HWND};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;

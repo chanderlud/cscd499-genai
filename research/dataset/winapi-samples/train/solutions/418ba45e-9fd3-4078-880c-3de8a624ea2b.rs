@@ -16,19 +16,17 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     match msg {
         WM_CREATE => {
             unsafe {
-                // Extract data passed via lpCreateParams
                 let cs = lparam.0 as *const CREATESTRUCTW;
                 let data_ptr = (*cs).lpCreateParams as *mut WindowData;
                 let data = Box::from_raw(data_ptr);
-
-                // Store data in window's user data for later access
+                // Use the field to silence dead_code warning
+                let _ = &data.message;
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(data) as _);
             }
             LRESULT(0)
         }
         WM_DESTROY => {
             unsafe {
-                // Clean up stored data
                 let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowData;
                 if !data_ptr.is_null() {
                     let _ = Box::from_raw(data_ptr);
@@ -56,12 +54,10 @@ fn main() -> windows::core::Result<()> {
 
         RegisterClassW(&wnd_class);
 
-        // Create data to pass to window procedure
         let window_data = Box::new(WindowData {
             message: String::from("Hello from lpCreateParams!"),
         });
 
-        // Pass data pointer via lpCreateParams
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             window_class,
@@ -77,7 +73,7 @@ fn main() -> windows::core::Result<()> {
             Some(Box::into_raw(window_data) as _),
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {

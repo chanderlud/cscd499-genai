@@ -63,7 +63,7 @@ fn main() -> windows::core::Result<()> {
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -79,7 +79,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     unsafe {
         match msg {
             WM_CREATE => {
-                let cs = lparam.0 as *const CREATESTRUCTW;
+                let _cs = lparam.0 as *const CREATESTRUCTW;
                 let mut rect = RECT::default();
                 GetClientRect(hwnd, &mut rect).unwrap();
 
@@ -98,7 +98,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     Some(LPARAM(1)),
                 );
 
-                SetFocus(Some(hwnd));
+                let _ = SetFocus(Some(hwnd));
                 LRESULT(0)
             }
             WM_PAINT => {
@@ -133,7 +133,11 @@ unsafe fn create_text_box(main_window: HWND, rect: RECT) -> UIElement {
     )
     .unwrap();
 
-    let original_proc_ptr = SetWindowLongPtrW(text_box, GWL_WNDPROC, text_box_proc as isize);
+    let original_proc_ptr = SetWindowLongPtrW(
+        text_box,
+        GWL_WNDPROC,
+        text_box_proc as *const () as usize as isize,
+    );
     UIElement {
         hwnd: text_box,
         original_proc_ptr,
@@ -157,7 +161,11 @@ unsafe fn create_list_box(main_window: HWND, rect: RECT) -> UIElement {
     )
     .unwrap();
 
-    let original_proc_ptr = SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as isize);
+    let original_proc_ptr = SetWindowLongPtrW(
+        list_box,
+        GWL_WNDPROC,
+        list_box_proc as *const () as usize as isize,
+    );
     UIElement {
         hwnd: list_box,
         original_proc_ptr,
@@ -183,20 +191,27 @@ unsafe fn create_font() -> HFONT {
     )
 }
 
-extern "system" fn text_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+extern "system" fn text_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     unsafe {
         let app_context_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
         if app_context_ptr != 0 {
             let app_context = &*(app_context_ptr as *const AppContext);
             if let Some(result) =
-                route_nav_keys_to_list_box(app_context.list_box.hwnd, msg, wparam, lparam)
+                route_nav_keys_to_list_box(app_context.list_box.hwnd, msg, wparam, _lparam)
             {
                 return result;
             }
-            let proc = std::mem::transmute(app_context.text_box.original_proc_ptr);
-            CallWindowProcW(proc, hwnd, msg, wparam, lparam)
+            let proc = std::mem::transmute::<
+                isize,
+                Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,
+            >(app_context.text_box.original_proc_ptr);
+            if let Some(proc) = proc {
+                CallWindowProcW(Some(proc), hwnd, msg, wparam, _lparam)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, _lparam)
+            }
         } else {
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            DefWindowProcW(hwnd, msg, wparam, _lparam)
         }
     }
 }
@@ -205,20 +220,27 @@ unsafe extern "system" fn list_box_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
-    lparam: LPARAM,
+    _lparam: LPARAM,
 ) -> LRESULT {
     let app_context_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if app_context_ptr != 0 {
         let app_context = &*(app_context_ptr as *const AppContext);
         if let Some(result) =
-            route_key_up_to_text_box(app_context.text_box.hwnd, msg, wparam, lparam)
+            route_key_up_to_text_box(app_context.text_box.hwnd, msg, wparam, _lparam)
         {
             return result;
         }
-        let proc = std::mem::transmute(app_context.list_box.original_proc_ptr);
-        CallWindowProcW(proc, hwnd, msg, wparam, lparam)
+        let proc = std::mem::transmute::<
+            isize,
+            Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,
+        >(app_context.list_box.original_proc_ptr);
+        if let Some(proc) = proc {
+            CallWindowProcW(Some(proc), hwnd, msg, wparam, _lparam)
+        } else {
+            DefWindowProcW(hwnd, msg, wparam, _lparam)
+        }
     } else {
-        DefWindowProcW(hwnd, msg, wparam, lparam)
+        DefWindowProcW(hwnd, msg, wparam, _lparam)
     }
 }
 
@@ -226,14 +248,14 @@ fn route_nav_keys_to_list_box(
     list_box: HWND,
     msg: u32,
     wparam: WPARAM,
-    lparam: LPARAM,
+    _lparam: LPARAM,
 ) -> Option<LRESULT> {
     if msg == WM_KEYDOWN {
         let key = wparam.0 as u32;
         let vkey = VIRTUAL_KEY(key as u16);
         if vkey == VK_DOWN {
             unsafe {
-                SetFocus(Some(list_box)).unwrap();
+                let _ = SetFocus(Some(list_box));
                 SendMessageW(list_box, LB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
             }
             return Some(LRESULT(0));
@@ -246,14 +268,14 @@ fn route_key_up_to_text_box(
     text_box: HWND,
     msg: u32,
     wparam: WPARAM,
-    lparam: LPARAM,
+    _lparam: LPARAM,
 ) -> Option<LRESULT> {
     if msg == WM_KEYUP {
         let key = wparam.0 as u32;
         let vkey = VIRTUAL_KEY(key as u16);
         if vkey == VK_UP {
             unsafe {
-                SetFocus(Some(text_box)).unwrap();
+                let _ = SetFocus(Some(text_box));
             }
             return Some(LRESULT(0));
         }

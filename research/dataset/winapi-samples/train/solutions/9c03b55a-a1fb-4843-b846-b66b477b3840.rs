@@ -124,12 +124,10 @@ fn rsa_sign_and_verify(message: &[u8], key_size: u32) -> Result<bool> {
         BCryptGetProperty(
             hash_alg_handle.as_raw().into(),
             BCRYPT_HASH_LENGTH,
-            Some(unsafe {
-                std::slice::from_raw_parts_mut(
-                    &mut hash_length as *mut u32 as *mut u8,
-                    std::mem::size_of::<u32>(),
-                )
-            }),
+            Some(std::slice::from_raw_parts_mut(
+                &mut hash_length as *mut u32 as *mut u8,
+                std::mem::size_of::<u32>(),
+            )),
             &mut result_length,
             0,
         )
@@ -216,4 +214,12 @@ fn rsa_sign_and_verify(message: &[u8], key_size: u32) -> Result<bool> {
     };
 
     Ok(status == STATUS_SUCCESS)
+}
+
+fn main() -> Result<()> {
+    let message = b"test message";
+    let key_size = 2048;
+    let result = rsa_sign_and_verify(message, key_size)?;
+    println!("Verification result: {}", result);
+    Ok(())
 }

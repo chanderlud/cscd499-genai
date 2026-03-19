@@ -1,9 +1,11 @@
-use windows::core::{Result, Error};
+use windows::core::Result;
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 
 fn main() -> Result<()> {
     let mut power_status = SYSTEM_POWER_STATUS::default();
-    unsafe { GetSystemPowerStatus(&mut power_status)?; }
+    unsafe {
+        GetSystemPowerStatus(&mut power_status)?;
+    }
 
     println!("✓ Successfully retrieved system power status\n");
 
@@ -53,11 +55,19 @@ fn main() -> Result<()> {
     println!("\nPower Status Summary:");
     println!(
         "  - AC Power: {}",
-        if power_status.ACLineStatus == 1 { "Connected" } else { "Disconnected" }
+        if power_status.ACLineStatus == 1 {
+            "Connected"
+        } else {
+            "Disconnected"
+        }
     );
     println!(
         "  - Battery: {}",
-        if power_status.BatteryFlag != 0 { "Present" } else { "Not Present" }
+        if power_status.BatteryFlag != 0 {
+            "Present"
+        } else {
+            "Not Present"
+        }
     );
     println!("  - Charge Level: {}", battery_percent);
     println!("  - Estimated Runtime: {}", battery_time);

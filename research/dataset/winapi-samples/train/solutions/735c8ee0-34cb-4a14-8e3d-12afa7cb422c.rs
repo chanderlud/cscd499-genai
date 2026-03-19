@@ -15,7 +15,7 @@ struct RegistryKeyGuard(HKEY);
 impl Drop for RegistryKeyGuard {
     fn drop(&mut self) {
         // SAFETY: FFI call with valid handle
-        unsafe { RegCloseKey(self.0) };
+        let _ = unsafe { RegCloseKey(self.0) };
     }
 }
 

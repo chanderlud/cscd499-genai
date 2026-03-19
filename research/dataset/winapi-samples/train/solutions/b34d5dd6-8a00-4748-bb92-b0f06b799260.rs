@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use windows::core::{Error, Result, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
 };

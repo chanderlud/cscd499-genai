@@ -1,7 +1,7 @@
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::{CloseHandle, E_INVALIDARG, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
-    CreateWaitableTimerW, SetWaitableTimer, WaitForSingleObjectEx, PTIMERAPCROUTINE,
+    CreateWaitableTimerW, SetWaitableTimer, WaitForSingleObjectEx,
 };
 
 unsafe extern "system" fn apc_routine(
@@ -15,7 +15,7 @@ unsafe extern "system" fn apc_routine(
 
 pub fn apc_timer_fires(due_ms: i64, timeout_ms: u32) -> Result<bool> {
     let mut fired = false;
-    let mut timer_handle = HANDLE::default();
+    let timer_handle: HANDLE;
 
     unsafe {
         timer_handle = CreateWaitableTimerW(None, false, None)?;

@@ -35,3 +35,11 @@ fn get_window_handle() -> Result<HWND> {
 
     Ok(HWND(hwnd_value as *mut std::ffi::c_void))
 }
+
+fn main() {
+    if let Ok(hwnd) = get_window_handle() {
+        println!("Window handle: {:?}", hwnd);
+    } else {
+        println!("Failed to get window handle");
+    }
+}

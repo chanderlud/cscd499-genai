@@ -82,7 +82,7 @@ fn main() -> windows::core::Result<()> {
             Some(open_windows_ptr as _),
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -200,7 +200,8 @@ unsafe fn create_text_box(main_window: HWND, rect: RECT) -> UIElement {
     )
     .unwrap();
 
-    let original_proc_ptr = SetWindowLongPtrW(text_box, GWL_WNDPROC, text_box_proc as isize);
+    let original_proc_ptr =
+        SetWindowLongPtrW(text_box, GWL_WNDPROC, text_box_proc as *const () as isize);
 
     UIElement {
         hwnd: text_box,
@@ -225,7 +226,8 @@ unsafe fn create_list_box(main_window: HWND, rect: RECT) -> UIElement {
     )
     .unwrap();
 
-    let original_proc_ptr = SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as isize);
+    let original_proc_ptr =
+        SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as *const () as isize);
 
     UIElement {
         hwnd: list_box,
@@ -344,13 +346,11 @@ fn default_window_proc(_hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -
         return Some(result);
     }
 
-    match msg {
-        WM_DESTROY => {
-            unsafe { PostQuitMessage(0) };
-            return Some(LRESULT(0));
-        }
-        _ => {}
+    if msg == WM_DESTROY {
+        unsafe { PostQuitMessage(0) };
+        return Some(LRESULT(0));
     }
+
     None
 }
 
@@ -405,7 +405,10 @@ extern "system" fn text_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
 
             let proc_ptr = app_context.text_box.original_proc_ptr;
-            let proc = Some(std::mem::transmute(proc_ptr));
+            let proc = Some(std::mem::transmute::<
+                isize,
+                unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+            >(proc_ptr));
             CallWindowProcW(proc, hwnd, msg, wparam, lparam)
         } else {
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -428,7 +431,7 @@ unsafe extern "system" fn list_box_proc(
     }
 
     let app_context = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppContext;
-    if app_context != std::ptr::null() {
+    if !app_context.is_null() {
         if let Some(result) =
             route_key_up_to_text_box((*app_context).text_box.hwnd, msg, wparam, lparam)
         {
@@ -436,7 +439,10 @@ unsafe extern "system" fn list_box_proc(
         }
 
         let proc_ptr = (*app_context).list_box.original_proc_ptr;
-        let proc = Some(std::mem::transmute(proc_ptr));
+        let proc = Some(std::mem::transmute::<
+            isize,
+            unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+        >(proc_ptr));
         CallWindowProcW(proc, hwnd, msg, wparam, lparam)
     } else {
         DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -458,7 +464,7 @@ fn fuzzy_compare(search: &str, to_search: &str) -> i32 {
     score
 }
 
-fn get_str_from_buffer(buffer_with_null_ter: &Vec<u16>) -> String {
+fn get_str_from_buffer(buffer_with_null_ter: &[u16]) -> String {
     String::from_utf16_lossy(&buffer_with_null_ter[0..buffer_with_null_ter.len() - 1])
 }
 
@@ -468,8 +474,7 @@ where
 {
     SendMessageW(list_box, LB_RESETCONTENT, Some(WPARAM(0)), Some(LPARAM(0)));
 
-    let mut i = 0;
-    for window_title in windows {
+    for (i, window_title) in windows.enumerate() {
         let window_ptr: isize = window_title as *const String as _;
 
         let title_wide = wide_null(std::ffi::OsStr::new(window_title));
@@ -486,7 +491,6 @@ where
             Some(WPARAM(i)),
             Some(LPARAM(window_ptr)),
         );
-        i += 1;
     }
 
     SendMessageW(list_box, LB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));

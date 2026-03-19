@@ -1,5 +1,5 @@
 use std::os::windows::io::AsRawHandle;
-use windows::core::{Error, Result};
+use windows::core::Result;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::FlushFileBuffers;
 use windows::Win32::System::Memory::FlushViewOfFile;

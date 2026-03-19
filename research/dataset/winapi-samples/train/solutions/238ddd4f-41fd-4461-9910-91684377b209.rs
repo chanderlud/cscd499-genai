@@ -52,3 +52,11 @@ fn toggle_ime_conversion_mode(target_mode: isize) -> Result<isize> {
 
     Ok(new_mode)
 }
+
+fn main() -> Result<()> {
+    // Example usage - replace with actual target mode
+    let target_mode = 0x0001;
+    let result = toggle_ime_conversion_mode(target_mode)?;
+    println!("New IME conversion mode: {:#x}", result);
+    Ok(())
+}

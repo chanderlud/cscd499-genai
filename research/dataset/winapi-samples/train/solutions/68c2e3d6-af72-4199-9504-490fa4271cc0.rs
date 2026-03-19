@@ -1,6 +1,4 @@
-use std::mem::size_of;
-use windows::core::{Error, Result};
-use windows::Win32::Foundation::NTSTATUS;
+use windows::core::Result;
 use windows::Win32::Security::Cryptography::*;
 
 fn remove_leading_zeros(bytes: &[u8]) -> &[u8] {

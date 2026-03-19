@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, PCWSTR};
+use windows::core::{Error, PCWSTR};
 use windows::Win32::Foundation::ERROR_INVALID_DATA;
 use windows::Win32::Security::Cryptography::{
     BCryptExportKey, BCryptGetProperty, BCRYPT_ALGORITHM_NAME, BCRYPT_ECCKEY_BLOB,
@@ -6,10 +6,10 @@ use windows::Win32::Security::Cryptography::{
 };
 
 // Define magic numbers manually since they're not available in the windows crate
-const BCRYPT_ECDSA_PUBLIC_MAGIC: u32 = 0x31415350;
-const BCRYPT_ECDH_PUBLIC_MAGIC: u32 = 0x314B4345;
+pub const BCRYPT_ECDSA_PUBLIC_MAGIC: u32 = 0x31415350;
+pub const BCRYPT_ECDH_PUBLIC_MAGIC: u32 = 0x314B4345;
 
-fn export_ecc_public_key_to_uncompressed_point(
+pub fn export_ecc_public_key_to_uncompressed_point(
     key_handle: BCRYPT_KEY_HANDLE,
 ) -> windows::core::Result<Vec<u8>> {
     // Query algorithm name to determine key type

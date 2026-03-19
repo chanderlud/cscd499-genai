@@ -83,7 +83,7 @@ impl NotifyIcon {
     pub fn notify(&self, message: NOTIFY_ICON_MESSAGE) -> Result<()> {
         (unsafe { Shell_NotifyIconW(message, &self.data) } != FALSE)
             .then_some(())
-            .ok_or_else(|| Error::from_thread())
+            .ok_or_else(Error::from_thread)
     }
 
     /// Adds the notification icon to the system tray.
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.into() {
         // SAFETY: TranslateMessage and DispatchMessageW are safe to call with valid parameters
         unsafe {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }

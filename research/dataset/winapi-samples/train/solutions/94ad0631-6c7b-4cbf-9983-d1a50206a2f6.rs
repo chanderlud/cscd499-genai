@@ -32,3 +32,9 @@ fn get_ime_conversion_mode() -> Result<i32> {
     // SendMessageW returns LRESULT, which we convert to i32
     Ok(result.0 as i32)
 }
+
+fn main() -> Result<()> {
+    let conversion_mode = get_ime_conversion_mode()?;
+    println!("IME Conversion Mode: {}", conversion_mode);
+    Ok(())
+}

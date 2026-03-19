@@ -49,6 +49,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print detailed compile-error analysis per benchmark and model.",
     )
+    parser.add_argument(
+        "--charts-dir",
+        default=None,
+        help=(
+            "Optional output directory for PNG chart files. "
+            "When omitted, no charts are produced."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -480,6 +488,260 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             )
 
 
+def _safe_filename_component(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "unknown"
+
+
+def _chart_model_overview(
+    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+) -> None:
+    metric_specs = [
+        ("pass@1", "pass_at_1"),
+        ("pass@k", "pass_at_k"),
+        ("avg_build_rate", "avg_build_rate"),
+        ("avg_test_rate", "avg_test_rate"),
+    ]
+    for benchmark, rows in sorted(by_benchmark.items()):
+        if not rows:
+            continue
+        ordered = sorted(rows, key=lambda row: (-row["pass_at_1"], row["model"]))
+        models = [row["model"] for row in ordered]
+        x = list(range(len(models)))
+        width = 0.18
+        offsets = [-1.5 * width, -0.5 * width, 0.5 * width, 1.5 * width]
+
+        fig, ax = plt.subplots(figsize=(max(10, len(models) * 1.4), 6))
+        for offset, (label, key) in zip(offsets, metric_specs):
+            values = [row[key] * 100.0 for row in ordered]
+            bars = ax.bar([i + offset for i in x], values, width=width, label=label)
+            for bar, value in zip(bars, values):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    bar.get_height() + 0.7,
+                    f"{value:.1f}%",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(models, rotation=30, ha="right")
+        ax.set_ylim(0.0, 105.0)
+        ax.set_ylabel("Percent")
+        ax.set_title(f"Model Performance Overview: {benchmark}")
+        ax.legend(loc="upper right")
+        ax.grid(axis="y", alpha=0.3, linestyle="--")
+        fig.tight_layout()
+        out_path = charts_dir / f"{_safe_filename_component(benchmark)}_overview.png"
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _chart_quality_metrics(
+    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+) -> None:
+    for benchmark, rows in sorted(by_benchmark.items()):
+        if not rows:
+            continue
+        ordered = sorted(rows, key=lambda row: (-row["pass_at_1"], row["model"]))
+        models = [row["model"] for row in ordered]
+        x = list(range(len(models)))
+        warnings = [row["avg_clippy_warnings"] for row in ordered]
+        errors = [row["avg_clippy_errors"] for row in ordered]
+        fail_rate = [row["build_fail_rate"] * 100.0 for row in ordered]
+
+        fig, ax1 = plt.subplots(figsize=(max(10, len(models) * 1.4), 6))
+        ax1.bar(x, warnings, label="avg_clippy_warnings", color="#f1c40f")
+        ax1.bar(x, errors, bottom=warnings, label="avg_clippy_errors", color="#e67e22")
+        ax1.set_ylabel("Avg clippy issues / problem")
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(models, rotation=30, ha="right")
+        ax1.grid(axis="y", alpha=0.25, linestyle="--")
+
+        ax2 = ax1.twinx()
+        ax2.plot(x, fail_rate, color="#c0392b", marker="o", linewidth=2, label="build_fail_rate")
+        ax2.set_ylim(0.0, 100.0)
+        ax2.set_ylabel("Build fail rate (%)")
+
+        handles1, labels1 = ax1.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(handles1 + handles2, labels1 + labels2, loc="upper right")
+        ax1.set_title(f"Build & Clippy Quality: {benchmark}")
+        fig.tight_layout()
+        out_path = charts_dir / f"{_safe_filename_component(benchmark)}_quality.png"
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _chart_error_codes(
+    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+) -> None:
+    for benchmark, rows in sorted(by_benchmark.items()):
+        if not rows:
+            continue
+        ordered = sorted(rows, key=lambda row: (-row["pass_at_1"], row["model"]))
+        model_count = len(ordered)
+        fig, axes = plt.subplots(
+            nrows=model_count,
+            ncols=1,
+            figsize=(10, max(3.0 * model_count, 4.0)),
+            squeeze=False,
+        )
+        for idx, row in enumerate(ordered):
+            ax = axes[idx][0]
+            codes = row.get("top_build_error_codes", [])
+            if not codes:
+                ax.text(0.5, 0.5, "No build error codes", ha="center", va="center", transform=ax.transAxes)
+                ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_title(row["model"])
+                continue
+            sorted_codes = sorted(codes, key=lambda item: item[1], reverse=True)
+            labels = [code for code, _ in sorted_codes]
+            counts = [count for _, count in sorted_codes]
+            y = list(range(len(labels)))
+            ax.barh(y, counts, color="#3498db")
+            ax.set_yticks(y)
+            ax.set_yticklabels(labels)
+            ax.invert_yaxis()
+            ax.set_xlabel("Count")
+            ax.set_title(row["model"])
+            for yi, count in zip(y, counts):
+                ax.text(count + 0.05, yi, str(count), va="center", fontsize=8)
+            ax.grid(axis="x", alpha=0.25, linestyle="--")
+        fig.suptitle(f"Top Build Error Codes: {benchmark}", y=1.01)
+        fig.tight_layout()
+        out_path = charts_dir / f"{_safe_filename_component(benchmark)}_error_codes.png"
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _chart_per_problem_heatmap(
+    by_benchmark: dict[str, list[dict[str, Any]]],
+    grouped: dict[tuple[str, str], dict[str, Any]],
+    charts_dir: Path,
+    plt: Any,
+) -> None:
+    for benchmark, rows in sorted(by_benchmark.items()):
+        if not rows:
+            continue
+        ordered = sorted(rows, key=lambda row: (-row["pass_at_1"], row["model"]))
+        models = [row["model"] for row in ordered]
+        problem_ids: set[str] = set()
+        per_model_maps: dict[str, dict[str, float]] = {}
+
+        for model in models:
+            group = grouped.get((benchmark, model), {})
+            per_problem = group.get("per_problem", [])
+            model_map: dict[str, float] = {}
+            if isinstance(per_problem, list):
+                for item in per_problem:
+                    if not isinstance(item, dict):
+                        continue
+                    pid = str(item.get("problem_id", ""))
+                    rate = safe_float(item.get("overall_ok_rate"))
+                    model_map[pid] = rate
+                    problem_ids.add(pid)
+            per_model_maps[model] = model_map
+
+        sorted_problem_ids = sorted(problem_ids)
+        if not sorted_problem_ids:
+            continue
+        matrix = [
+            [per_model_maps[model].get(pid, 0.0) for pid in sorted_problem_ids]
+            for model in models
+        ]
+
+        fig, ax = plt.subplots(
+            figsize=(max(10, len(sorted_problem_ids) * 0.4), max(4, len(models) * 0.6))
+        )
+        heat = ax.imshow(matrix, aspect="auto", vmin=0.0, vmax=1.0, cmap="RdYlGn")
+        ax.set_yticks(list(range(len(models))))
+        ax.set_yticklabels(models)
+        ax.set_xticks(list(range(len(sorted_problem_ids))))
+        ax.set_xticklabels(sorted_problem_ids, rotation=90, fontsize=8)
+        ax.set_title(f"Per-Problem Overall OK Rate Heatmap: {benchmark}")
+        ax.set_xlabel("Problem ID")
+        ax.set_ylabel("Model")
+        cbar = fig.colorbar(heat, ax=ax)
+        cbar.set_label("overall_ok_rate")
+        fig.tight_layout()
+        out_path = charts_dir / f"{_safe_filename_component(benchmark)}_heatmap.png"
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _chart_radar(
+    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+) -> None:
+    try:
+        import numpy as np
+    except ImportError:
+        print("Skipping radar charts because numpy is unavailable.")
+        return
+
+    axis_specs = [
+        ("pass@1", "pass_at_1"),
+        ("pass@k", "pass_at_k"),
+        ("avg_build_rate", "avg_build_rate"),
+        ("avg_test_rate", "avg_test_rate"),
+        ("1-build_fail_rate", "build_fail_rate"),
+        ("1-build_fail_all_pct", "build_fail_all_pct"),
+    ]
+    labels = [label for label, _ in axis_specs]
+    axis_count = len(axis_specs)
+    angles = np.linspace(0, 2 * np.pi, axis_count, endpoint=False)
+    angles = np.append(angles, angles[0])
+
+    for benchmark, rows in sorted(by_benchmark.items()):
+        if not rows:
+            continue
+        ordered = sorted(rows, key=lambda row: (-row["pass_at_1"], row["model"]))
+        fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={"projection": "polar"})
+        for row in ordered:
+            values = []
+            for _, key in axis_specs:
+                value = safe_float(row.get(key))
+                if key in {"build_fail_rate", "build_fail_all_pct"}:
+                    value = 1.0 - value
+                values.append(max(0.0, min(1.0, value)))
+            values = np.append(values, values[0])
+            ax.plot(angles, values, linewidth=2, label=row["model"])
+            ax.fill(angles, values, alpha=0.08)
+
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(labels)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+        ax.set_title(f"Radar Profile: {benchmark}", pad=24)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.12))
+        fig.tight_layout()
+        out_path = charts_dir / f"{_safe_filename_component(benchmark)}_radar.png"
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+
+
+def generate_charts(
+    by_benchmark: dict[str, list[dict[str, Any]]],
+    grouped: dict[tuple[str, str], dict[str, Any]],
+    charts_dir: Path,
+) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(
+            "Chart generation requested, but matplotlib is not installed. "
+            "Install it with: pip install matplotlib"
+        )
+        return
+
+    _chart_model_overview(by_benchmark, charts_dir, plt)
+    _chart_quality_metrics(by_benchmark, charts_dir, plt)
+    _chart_error_codes(by_benchmark, charts_dir, plt)
+    _chart_per_problem_heatmap(by_benchmark, grouped, charts_dir, plt)
+    _chart_radar(by_benchmark, charts_dir, plt)
+
+
 def main() -> int:
     args = parse_args()
     reports_dir = Path(args.reports_dir).resolve()
@@ -508,6 +770,12 @@ def main() -> int:
 
     if args.per_problem:
         print_per_problem(grouped)
+
+    if args.charts_dir:
+        charts_dir = Path(args.charts_dir).resolve()
+        charts_dir.mkdir(parents=True, exist_ok=True)
+        generate_charts(by_benchmark, grouped, charts_dir)
+        print(f"\nWrote charts to: {charts_dir}")
 
     if args.out:
         out_path = Path(args.out).resolve()

@@ -1,9 +1,7 @@
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::core::{Error, Result, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, ERROR_FILENAME_EXCED_RANGE, MAX_PATH, WIN32_ERROR,
-};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILENAME_EXCED_RANGE, MAX_PATH};
 use windows::Win32::Storage::FileSystem::CreateDirectoryW;
 
 const MAX_PATH_USIZE: usize = MAX_PATH as usize;

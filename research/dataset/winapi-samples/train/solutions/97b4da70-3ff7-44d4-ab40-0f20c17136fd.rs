@@ -81,19 +81,19 @@ fn main() -> Result<()> {
         // Set focus to the notification icon
         if Shell_NotifyIconW(NIM_SETFOCUS, &nid) == FALSE {
             // Clean up before returning error
-            Shell_NotifyIconW(NIM_DELETE, &nid);
+            let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
             return Err(Error::from_thread());
         }
 
         // Message loop
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 
         // Clean up notification icon
-        Shell_NotifyIconW(NIM_DELETE, &nid);
+        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 
         Ok(())
     }

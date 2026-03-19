@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_PARAMETER, ERROR_WRITE_FAULT, GENERIC_READ, GENERIC_WRITE, HANDLE,
 };
@@ -79,7 +79,7 @@ impl FileHandle {
 impl Drop for FileHandle {
     fn drop(&mut self) {
         // SAFETY: Closing a valid handle
-        unsafe { CloseHandle(self.0) };
+        let _ = unsafe { CloseHandle(self.0) };
     }
 }
 

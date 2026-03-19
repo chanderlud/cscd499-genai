@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
     let problems = load_problems(&cli.problems)?;
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(240))
+        .timeout(std::time::Duration::from_secs(600))
         .build()
         .context("build reqwest client")?;
 
@@ -519,10 +519,11 @@ async fn run_attempt(
             }
         };
 
+        let no_special_tokens_text = strip_special_tokens(&raw_text);
         let cleaned_text = if matches!(backend, Backend::Ollama) {
-            strip_think_blocks(&raw_text)
+            strip_think_blocks(&no_special_tokens_text)
         } else {
-            raw_text.clone()
+            no_special_tokens_text
         };
 
         last_finish_reason = finish_reason.clone();
@@ -715,6 +716,15 @@ fn is_prose_or_wrapper_line(line: &str, sentence_re: Option<&Regex>) -> bool {
 fn strip_think_blocks(raw: &str) -> String {
     match Regex::new(r"(?s)<think>.*?</think>") {
         Ok(think_re) => think_re.replace_all(raw, "").to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn strip_special_tokens(raw: &str) -> String {
+    match Regex::new(
+        r"<\|(?:im_start|im_end|endoftext|eot_id|start_header_id|end_header_id|file_sep|fim_prefix|fim_middle|fim_suffix)[^|]*\|>|\[/?INST\]|<</?SYS>>|</?s>|<\|[^|>]{1,40}\|>",
+    ) {
+        Ok(token_re) => token_re.replace_all(raw, "").to_string(),
         Err(_) => raw.to_string(),
     }
 }

@@ -21,3 +21,10 @@ fn get_tick_count_addr() -> Result<usize> {
     addr.ok_or_else(Error::from_thread)
         .map(|proc| proc as usize)
 }
+
+fn main() {
+    match get_tick_count_addr() {
+        Ok(addr) => println!("GetTickCount address: {:x}", addr),
+        Err(e) => eprintln!("Failed to get address: {}", e),
+    }
+}

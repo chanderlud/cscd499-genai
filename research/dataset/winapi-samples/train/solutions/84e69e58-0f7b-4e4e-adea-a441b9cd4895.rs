@@ -45,3 +45,9 @@ fn get_desktop_monitor_bounds() -> Result<RECT> {
 
     Ok(monitor_info.rcMonitor)
 }
+
+fn main() -> Result<()> {
+    let bounds = get_desktop_monitor_bounds()?;
+    println!("Monitor bounds: {:?}", bounds);
+    Ok(())
+}

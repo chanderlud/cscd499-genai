@@ -1,5 +1,3 @@
-use std::ptr;
-use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER};
 use windows::Win32::NetworkManagement::NetManagement::{
     NetApiBufferFree, NetUserEnum, NET_USER_ENUM_FILTER_FLAGS, USER_INFO_0,
 };
@@ -36,11 +34,23 @@ fn enumerate_local_users() -> Result<Vec<String>, u32> {
         }
     }
 
-    if buf_ptr != std::ptr::null_mut() {
+    if !buf_ptr.is_null() {
         unsafe {
             NetApiBufferFree(Some(buf_ptr as *const core::ffi::c_void));
         }
     }
 
     Ok(users)
+}
+
+fn main() {
+    match enumerate_local_users() {
+        Ok(users) => {
+            println!("Local users:");
+            for user in users {
+                println!("  {}", user);
+            }
+        }
+        Err(code) => eprintln!("Failed to enumerate users: {}", code),
+    }
 }

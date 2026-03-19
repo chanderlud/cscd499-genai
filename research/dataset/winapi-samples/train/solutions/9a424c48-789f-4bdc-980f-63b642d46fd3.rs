@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
-use windows::core::{PCWSTR, Result};
+use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::{
     GetFileAttributesExW, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA,
 };
@@ -74,7 +74,6 @@ fn main() {
     println!("  Last Write Time: {:?}", last_write_time);
 
     // Display file size
-    let file_size =
-        file_info.nFileSizeLow as u64 | ((file_info.nFileSizeHigh as u64) << 32);
+    let file_size = file_info.nFileSizeLow as u64 | ((file_info.nFileSizeHigh as u64) << 32);
     println!("\nFile Size: {} bytes", file_size);
 }

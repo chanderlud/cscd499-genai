@@ -1,4 +1,4 @@
-use windows::core::{Error, Result};
+use windows::core::Result;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{ClipCursor, GetClipCursor};
 

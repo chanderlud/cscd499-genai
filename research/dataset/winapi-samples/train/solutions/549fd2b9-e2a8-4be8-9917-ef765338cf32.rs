@@ -52,7 +52,9 @@ pub fn compute_hmac(algorithm: HmacAlgorithm, key: &[u8], message: &[u8]) -> Res
     let status = unsafe { BCryptCreateHash(alg_handle, &mut hash_handle, None, Some(key), 0) };
     if status.0 < 0 {
         // Clean up algorithm handle before returning error
-        unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+        unsafe {
+            let _ = BCryptCloseAlgorithmProvider(alg_handle, 0);
+        };
         return Err(Error::from_hresult(HRESULT::from_nt(status.0)));
     }
 
@@ -62,8 +64,8 @@ pub fn compute_hmac(algorithm: HmacAlgorithm, key: &[u8], message: &[u8]) -> Res
     if status.0 < 0 {
         // Clean up handles before returning error
         unsafe {
-            BCryptDestroyHash(hash_handle);
-            BCryptCloseAlgorithmProvider(alg_handle, 0);
+            let _ = BCryptDestroyHash(hash_handle);
+            let _ = BCryptCloseAlgorithmProvider(alg_handle, 0);
         };
         return Err(Error::from_hresult(HRESULT::from_nt(status.0)));
     }
@@ -78,8 +80,8 @@ pub fn compute_hmac(algorithm: HmacAlgorithm, key: &[u8], message: &[u8]) -> Res
 
     // Clean up handles regardless of success/failure
     unsafe {
-        BCryptDestroyHash(hash_handle);
-        BCryptCloseAlgorithmProvider(alg_handle, 0);
+        let _ = BCryptDestroyHash(hash_handle);
+        let _ = BCryptCloseAlgorithmProvider(alg_handle, 0);
     };
 
     if status.0 < 0 {

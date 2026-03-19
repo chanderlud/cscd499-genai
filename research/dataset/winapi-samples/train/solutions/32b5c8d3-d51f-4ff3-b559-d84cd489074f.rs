@@ -49,14 +49,14 @@ impl AesGcmCipher {
                 0,
             );
             if status != STATUS_SUCCESS {
-                BCryptCloseAlgorithmProvider(alg_handle, 0);
+                let _ = BCryptCloseAlgorithmProvider(alg_handle, 0);
                 return Err(Error::from_hresult(status.to_hresult()));
             }
 
             // Generate symmetric key
             let status = BCryptGenerateSymmetricKey(alg_handle, &mut key_handle, None, key, 0);
             if status != STATUS_SUCCESS {
-                BCryptCloseAlgorithmProvider(alg_handle, 0);
+                let _ = BCryptCloseAlgorithmProvider(alg_handle, 0);
                 return Err(Error::from_hresult(status.to_hresult()));
             }
         }
@@ -192,4 +192,18 @@ impl Drop for AesGcmCipher {
             }
         }
     }
+}
+
+fn main() -> Result<()> {
+    let key = [1u8; 32]; // Example 32-byte key
+    let cipher = AesGcmCipher::new(&key)?;
+
+    let plaintext = b"Hello, World!";
+    let associated_data = b"additional data";
+
+    let (ciphertext, tag, nonce) = cipher.encrypt(plaintext, associated_data)?;
+    let decrypted = cipher.decrypt(&ciphertext, associated_data, &tag, &nonce)?;
+
+    assert_eq!(decrypted, plaintext);
+    Ok(())
 }

@@ -33,8 +33,10 @@ where
     let _guard = HandleGuard(snapshot);
 
     // Initialize heap list structure
-    let mut heap_list = HEAPLIST32::default();
-    heap_list.dwSize = std::mem::size_of::<HEAPLIST32>();
+    let mut heap_list = HEAPLIST32 {
+        dwSize: std::mem::size_of::<HEAPLIST32>(),
+        ..Default::default()
+    };
 
     // Get first heap list
     // SAFETY: heap_list is properly initialized and we pass a valid snapshot handle
@@ -51,8 +53,10 @@ where
     // Iterate through all heap lists
     loop {
         // Initialize heap entry structure for this heap list
-        let mut heap_entry = HEAPENTRY32::default();
-        heap_entry.dwSize = std::mem::size_of::<HEAPENTRY32>();
+        let mut heap_entry = HEAPENTRY32 {
+            dwSize: std::mem::size_of::<HEAPENTRY32>(),
+            ..Default::default()
+        };
 
         // Get first heap entry in this list
         // SAFETY: heap_entry is properly initialized and we pass valid parameters
@@ -70,8 +74,8 @@ where
             loop {
                 // Create HeapBlock from heap entry data
                 let block = HeapBlock {
-                    address: heap_entry.dwAddress as usize,
-                    size: heap_entry.dwBlockSize as usize,
+                    address: heap_entry.dwAddress,
+                    size: heap_entry.dwBlockSize,
                     flags: heap_entry.dwFlags.0,
                 };
 

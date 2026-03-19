@@ -4,7 +4,8 @@ use windows::Win32::Foundation::{
     ERROR_MORE_DATA, ERROR_SUCCESS,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, KEY_READ, REG_SZ, REG_VALUE_TYPE,
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
+    REG_VALUE_TYPE,
 };
 
 fn wide_null(s: &str) -> Result<[u16; 260]> {
@@ -34,11 +35,9 @@ impl Drop for RegKeyGuard {
 }
 
 fn get_registry_string_noalloc(hive: HKEY, path: &str, value_name: &str) -> Result<String> {
-    // Convert path and value_name to wide strings with null terminators
     let path_wide = wide_null(path)?;
     let value_name_wide = wide_null(value_name)?;
 
-    // Open the registry key
     let mut hkey = HKEY::default();
     let result = unsafe {
         RegOpenKeyExW(
@@ -53,10 +52,8 @@ fn get_registry_string_noalloc(hive: HKEY, path: &str, value_name: &str) -> Resu
         return Err(Error::from_hresult(HRESULT::from_win32(result.0)));
     }
 
-    // Ensure key is closed even if errors occur
     let _guard = RegKeyGuard(hkey);
 
-    // First call: get required buffer size
     let mut value_type = REG_VALUE_TYPE::default();
     let mut data_size = 0u32;
     let result = unsafe {
@@ -79,21 +76,18 @@ fn get_registry_string_noalloc(hive: HKEY, path: &str, value_name: &str) -> Resu
         return Err(Error::from_hresult(HRESULT::from_win32(result.0)));
     }
 
-    // Check value type is REG_SZ
     if value_type != REG_SZ {
         return Err(Error::from_hresult(HRESULT::from_win32(
             ERROR_INVALID_DATA.0,
         )));
     }
 
-    // Check data size fits in our fixed buffer (4096 bytes = 2048 wide chars)
     if data_size > 4096 {
         return Err(Error::from_hresult(HRESULT::from_win32(
             ERROR_INSUFFICIENT_BUFFER.0,
         )));
     }
 
-    // Second call: read the actual data
     let mut data_buffer = [0u8; 4096];
     let mut actual_size = data_size;
     let result = unsafe {
@@ -111,8 +105,6 @@ fn get_registry_string_noalloc(hive: HKEY, path: &str, value_name: &str) -> Resu
         return Err(Error::from_hresult(HRESULT::from_win32(result.0)));
     }
 
-    // Convert wide string (UTF-16) to Rust String
-    // The data includes the null terminator, so we need to find it
     let wide_chars = unsafe {
         std::slice::from_raw_parts(
             data_buffer.as_ptr() as *const u16,
@@ -120,11 +112,19 @@ fn get_registry_string_noalloc(hive: HKEY, path: &str, value_name: &str) -> Resu
         )
     };
 
-    // Find the null terminator
     let len = wide_chars
         .iter()
         .position(|&c| c == 0)
         .unwrap_or(wide_chars.len());
     String::from_utf16(&wide_chars[..len])
         .map_err(|_| Error::from_hresult(HRESULT::from_win32(ERROR_INVALID_DATA.0)))
+}
+
+pub fn example_usage() -> Result<()> {
+    let hive = HKEY_CURRENT_USER;
+    let path = "Software\\Test";
+    let value_name = "TestValue";
+    let result = get_registry_string_noalloc(hive, path, value_name)?;
+    println!("Registry value: {}", result);
+    Ok(())
 }

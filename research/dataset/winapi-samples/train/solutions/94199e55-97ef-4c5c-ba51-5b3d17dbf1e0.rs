@@ -1,5 +1,5 @@
 use windows::core::{Error, Result};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, GCS_COMPATTR, HIMC,
 };
@@ -23,7 +23,7 @@ fn get_composition_attributes() -> Result<Vec<u8>> {
     struct ContextGuard(HWND, HIMC);
     impl Drop for ContextGuard {
         fn drop(&mut self) {
-            unsafe { ImmReleaseContext(self.0, self.1) };
+            let _ = unsafe { ImmReleaseContext(self.0, self.1) };
         }
     }
     let _guard = ContextGuard(hwnd, himc);
@@ -62,4 +62,10 @@ fn get_composition_attributes() -> Result<Vec<u8>> {
     // Truncate to actual size returned (might be smaller than allocated)
     buffer.truncate(result as usize);
     Ok(buffer)
+}
+
+fn main() -> Result<()> {
+    let attributes = get_composition_attributes()?;
+    println!("Composition attributes: {:?}", attributes);
+    Ok(())
 }

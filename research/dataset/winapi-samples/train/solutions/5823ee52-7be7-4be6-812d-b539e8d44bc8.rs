@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::windows::ffi::OsStringExt;
-use windows::core::{Error, Result};
+use windows::core::Result;
 use windows::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, WIN32_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedUdpTable, MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, UDP_TABLE_OWNER_PID,

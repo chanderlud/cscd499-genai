@@ -32,3 +32,11 @@ fn get_ime_sentence_mode() -> Result<i32> {
     // SendMessageA returns LRESULT, convert to i32
     Ok(result.0 as i32)
 }
+
+fn main() {
+    // Use the function to resolve the dead_code warning
+    match get_ime_sentence_mode() {
+        Ok(mode) => println!("IME sentence mode: {}", mode),
+        Err(e) => eprintln!("Error getting IME sentence mode: {}", e),
+    }
+}

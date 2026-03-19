@@ -8,17 +8,16 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::{OpenThread, SuspendThread, THREAD_SUSPEND_RESUME};
 
 fn find_process_id(process_name: &str) -> Result<u32> {
-    // SAFETY: CreateToolhelp32Snapshot returns a valid handle on success
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }?;
 
-    let mut process_entry = PROCESSENTRY32W::default();
-    process_entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut process_entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
 
-    // SAFETY: Process32FirstW initializes the struct and reads from the snapshot
     let mut found = unsafe { Process32FirstW(snapshot, &mut process_entry) }.is_ok();
 
     while found {
-        // Convert the fixed-size wide char array to a string for comparison
         let exe_file = String::from_utf16_lossy(
             &process_entry.szExeFile[..process_entry
                 .szExeFile
@@ -28,16 +27,13 @@ fn find_process_id(process_name: &str) -> Result<u32> {
         );
 
         if exe_file.eq_ignore_ascii_case(process_name) {
-            // SAFETY: CloseHandle is safe to call with a valid handle
             unsafe { CloseHandle(snapshot)? };
             return Ok(process_entry.th32ProcessID);
         }
 
-        // SAFETY: Process32NextW reads the next entry from the snapshot
         found = unsafe { Process32NextW(snapshot, &mut process_entry) }.is_ok();
     }
 
-    // SAFETY: CloseHandle is safe to call with a valid handle
     unsafe { CloseHandle(snapshot)? };
 
     Err(Error::new(
@@ -49,43 +45,34 @@ fn find_process_id(process_name: &str) -> Result<u32> {
 pub fn suspend_process_threads(process_name: &str) -> Result<Vec<HANDLE>> {
     let target_pid = find_process_id(process_name)?;
 
-    // SAFETY: CreateToolhelp32Snapshot returns a valid handle on success
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }?;
 
-    let mut thread_entry = THREADENTRY32::default();
-    thread_entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    let mut thread_entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
 
     let mut suspended_threads = Vec::new();
 
-    // SAFETY: Thread32First initializes the struct and reads from the snapshot
     let mut found = unsafe { Thread32First(snapshot, &mut thread_entry) }.is_ok();
 
     while found {
         if thread_entry.th32OwnerProcessID == target_pid {
-            // SAFETY: OpenThread returns a handle to the thread with requested access
-            match unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, thread_entry.th32ThreadID) } {
-                Ok(thread_handle) => {
-                    // SAFETY: SuspendThread operates on a valid thread handle
-                    let result = unsafe { SuspendThread(thread_handle) };
-                    if result != u32::MAX {
-                        suspended_threads.push(thread_handle);
-                    } else {
-                        // Failed to suspend, close the handle immediately
-                        // SAFETY: CloseHandle is safe to call with a valid handle
-                        unsafe { CloseHandle(thread_handle)? };
-                    }
-                }
-                Err(_) => {
-                    // Thread may have exited or access denied, continue with next thread
+            if let Ok(thread_handle) =
+                unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, thread_entry.th32ThreadID) }
+            {
+                let result = unsafe { SuspendThread(thread_handle) };
+                if result != u32::MAX {
+                    suspended_threads.push(thread_handle);
+                } else {
+                    unsafe { CloseHandle(thread_handle)? };
                 }
             }
         }
 
-        // SAFETY: Thread32Next reads the next entry from the snapshot
         found = unsafe { Thread32Next(snapshot, &mut thread_entry) }.is_ok();
     }
 
-    // SAFETY: CloseHandle is safe to call with a valid handle
     unsafe { CloseHandle(snapshot)? };
 
     Ok(suspended_threads)

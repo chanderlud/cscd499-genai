@@ -77,46 +77,44 @@ pub fn parse_debug_entries(data: &[u8]) -> Result<Vec<DebugEntry>> {
     let magic: u16 = read_struct(data, magic_offset)?;
 
     // Parse based on PE type
-    let (optional_header_offset, data_directories_offset, number_of_rva_and_sizes, sections_offset) =
-        match magic {
-            x if x == IMAGE_NT_OPTIONAL_HDR32_MAGIC.0 => {
-                let optional_header: IMAGE_OPTIONAL_HEADER32 =
-                    read_struct(data, coff_offset + mem::size_of::<u32>() * 3)?;
-                let data_dir_offset = coff_offset
-                    + mem::size_of::<u32>() * 3
-                    + mem::size_of::<IMAGE_OPTIONAL_HEADER32>()
+    let (
+        _optional_header_offset,
+        data_directories_offset,
+        number_of_rva_and_sizes,
+        sections_offset,
+    ) = match magic {
+        x if x == IMAGE_NT_OPTIONAL_HDR32_MAGIC.0 => {
+            let optional_header: IMAGE_OPTIONAL_HEADER32 =
+                read_struct(data, coff_offset + mem::size_of::<u32>() * 3)?;
+            let data_dir_offset =
+                coff_offset + mem::size_of::<u32>() * 3 + mem::size_of::<IMAGE_OPTIONAL_HEADER32>()
                     - mem::size_of::<IMAGE_DATA_DIRECTORY>() * 16;
-                (
-                    coff_offset + mem::size_of::<u32>() * 3,
-                    data_dir_offset,
-                    optional_header.NumberOfRvaAndSizes,
-                    coff_offset
-                        + mem::size_of::<u32>() * 3
-                        + mem::size_of::<IMAGE_OPTIONAL_HEADER32>(),
-                )
-            }
-            x if x == IMAGE_NT_OPTIONAL_HDR64_MAGIC.0 => {
-                let optional_header: IMAGE_OPTIONAL_HEADER64 =
-                    read_struct(data, coff_offset + mem::size_of::<u32>() * 3)?;
-                let data_dir_offset = coff_offset
-                    + mem::size_of::<u32>() * 3
-                    + mem::size_of::<IMAGE_OPTIONAL_HEADER64>()
+            (
+                coff_offset + mem::size_of::<u32>() * 3,
+                data_dir_offset,
+                optional_header.NumberOfRvaAndSizes,
+                coff_offset + mem::size_of::<u32>() * 3 + mem::size_of::<IMAGE_OPTIONAL_HEADER32>(),
+            )
+        }
+        x if x == IMAGE_NT_OPTIONAL_HDR64_MAGIC.0 => {
+            let optional_header: IMAGE_OPTIONAL_HEADER64 =
+                read_struct(data, coff_offset + mem::size_of::<u32>() * 3)?;
+            let data_dir_offset =
+                coff_offset + mem::size_of::<u32>() * 3 + mem::size_of::<IMAGE_OPTIONAL_HEADER64>()
                     - mem::size_of::<IMAGE_DATA_DIRECTORY>() * 16;
-                (
-                    coff_offset + mem::size_of::<u32>() * 3,
-                    data_dir_offset,
-                    optional_header.NumberOfRvaAndSizes,
-                    coff_offset
-                        + mem::size_of::<u32>() * 3
-                        + mem::size_of::<IMAGE_OPTIONAL_HEADER64>(),
-                )
-            }
-            _ => {
-                return Err(Error::from_hresult(HRESULT::from_win32(
-                    ERROR_INVALID_DATA.0,
-                )));
-            }
-        };
+            (
+                coff_offset + mem::size_of::<u32>() * 3,
+                data_dir_offset,
+                optional_header.NumberOfRvaAndSizes,
+                coff_offset + mem::size_of::<u32>() * 3 + mem::size_of::<IMAGE_OPTIONAL_HEADER64>(),
+            )
+        }
+        _ => {
+            return Err(Error::from_hresult(HRESULT::from_win32(
+                ERROR_INVALID_DATA.0,
+            )));
+        }
+    };
 
     // Check if we have enough data directories (need at least 7 for debug directory at index 6)
     if number_of_rva_and_sizes < 7 {

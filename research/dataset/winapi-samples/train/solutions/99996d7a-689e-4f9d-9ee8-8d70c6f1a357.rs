@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use windows::core::{Error, Result, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, WIN32_ERROR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
 fn wide_null(s: &OsStr) -> Vec<u16> {
@@ -93,5 +93,15 @@ fn thread_safe_example() -> Result<()> {
         .join()
         .map_err(|_| Error::from_hresult(HRESULT::from_win32(1)))??;
 
+    Ok(())
+}
+
+// Add a main function to use the functions and eliminate dead code warnings
+fn main() -> Result<()> {
+    let handle = create_event_manually()?;
+    wait_for_event(handle)?;
+    close_event_handle(handle)?;
+    example_hresult_conversion()?;
+    thread_safe_example()?;
     Ok(())
 }

@@ -46,7 +46,7 @@ fn main() -> windows::core::Result<()> {
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {

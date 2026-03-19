@@ -4,7 +4,7 @@ use windows::Win32::Foundation::STATUS_SUCCESS;
 use windows::Win32::Security::Cryptography::*;
 
 thread_local! {
-    static AES_GCM_ALG: OnceCell<BCRYPT_ALG_HANDLE> = OnceCell::new();
+    static AES_GCM_ALG: OnceCell<BCRYPT_ALG_HANDLE> = const { OnceCell::new() };
 }
 
 struct KeyGuard(BCRYPT_KEY_HANDLE);
@@ -12,7 +12,9 @@ struct KeyGuard(BCRYPT_KEY_HANDLE);
 impl Drop for KeyGuard {
     fn drop(&mut self) {
         // SAFETY: We own this key handle and must destroy it when done
-        unsafe { BCryptDestroyKey(self.0) };
+        unsafe {
+            let _ = BCryptDestroyKey(self.0);
+        }
     }
 }
 
@@ -84,13 +86,17 @@ pub fn encrypt_aes_gcm(
     }
     let _key_guard = KeyGuard(key_handle);
 
-    let mut auth_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO::default();
-    auth_info.cbSize = std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32;
-    auth_info.dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
-    auth_info.pbNonce = nonce.as_ptr() as *mut u8;
-    auth_info.cbNonce = nonce.len() as u32;
-    auth_info.pbAuthData = aad.as_ptr() as *mut u8;
-    auth_info.cbAuthData = aad.len() as u32;
+    let mut auth_info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+        cbSize: std::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+        dwInfoVersion: BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+        pbNonce: nonce.as_ptr() as *mut u8,
+        cbNonce: nonce.len() as u32,
+        pbAuthData: aad.as_ptr() as *mut u8,
+        cbAuthData: aad.len() as u32,
+        pbTag: std::ptr::null_mut(),
+        cbTag: 0,
+        ..Default::default()
+    };
 
     let mut tag = [0u8; 16];
     auth_info.pbTag = tag.as_mut_ptr();

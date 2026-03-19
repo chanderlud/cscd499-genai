@@ -1,8 +1,8 @@
+use windows::core::Result;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
-use windows::core::Result;
 
 fn main() -> Result<()> {
     // SAFETY: We are calling Win32 APIs with valid parameters and checking return values.

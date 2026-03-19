@@ -1,8 +1,8 @@
-use windows::core::{Error, Result};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::core::Result;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VIRTUAL_KEY, VK_CONTROL, VK_RMENU};
 use windows::Win32::UI::WindowsAndMessaging::{
-    PeekMessageW, MSG, PM_NOREMOVE, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    PeekMessageW, MSG, PM_NOREMOVE, WM_KEYDOWN, WM_SYSKEYUP,
 };
 
 fn main() -> Result<()> {

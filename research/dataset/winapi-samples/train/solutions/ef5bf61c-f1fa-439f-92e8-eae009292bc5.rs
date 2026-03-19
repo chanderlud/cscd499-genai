@@ -17,7 +17,7 @@ pub fn sspi_ntlm_seal_roundtrip_stack(plaintext: &[u8]) -> Result<Vec<u8>> {
     let package_info_ptr = unsafe { QuerySecurityPackageInfoW(PCWSTR(package_name.as_ptr()))? };
 
     // SAFETY: We trust the API returned a valid pointer
-    let max_token_size = unsafe { (*package_info_ptr).cbMaxToken as usize };
+    let _max_token_size = unsafe { (*package_info_ptr).cbMaxToken as usize };
 
     // SAFETY: Free the package info buffer
     unsafe {
@@ -25,7 +25,7 @@ pub fn sspi_ntlm_seal_roundtrip_stack(plaintext: &[u8]) -> Result<Vec<u8>> {
     }
 
     // Get security context sizes
-    let mut sizes = SecPkgContext_Sizes::default();
+    let _sizes = SecPkgContext_Sizes::default();
 
     // We'll get sizes after establishing contexts
     // For now, use reasonable fixed sizes based on typical NTLM
@@ -265,7 +265,6 @@ pub fn sspi_ntlm_seal_roundtrip_stack(plaintext: &[u8]) -> Result<Vec<u8>> {
     // Prepare buffers for encryption
     let mut encrypted_data = [0u8; FIXED_BUFFER_SIZE];
     let mut security_trailer = [0u8; FIXED_BUFFER_SIZE];
-    let mut padding_buffer = [0u8; FIXED_BUFFER_SIZE];
 
     // Copy plaintext to encrypted_data buffer
     let plaintext_len = plaintext.len();
@@ -306,7 +305,7 @@ pub fn sspi_ntlm_seal_roundtrip_stack(plaintext: &[u8]) -> Result<Vec<u8>> {
         pBuffers: encrypt_buffers.as_mut_ptr(),
     };
 
-    let mut message_seq = 0u32;
+    let message_seq: u32 = 0;
 
     // SAFETY: FFI call with valid pointers
     unsafe {
@@ -369,7 +368,7 @@ pub fn sspi_ntlm_seal_roundtrip_stack(plaintext: &[u8]) -> Result<Vec<u8>> {
     unsafe {
         DecryptMessage(
             &mut server_ctx as *const _,
-            &mut decrypt_buf_desc as *const _,
+            &mut decrypt_buf_desc as *mut _,
             message_seq,
             Some(&mut qop as *mut _),
         )

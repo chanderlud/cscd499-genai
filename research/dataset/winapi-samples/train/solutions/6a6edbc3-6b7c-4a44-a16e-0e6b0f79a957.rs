@@ -1,6 +1,3 @@
-// TITLE: Check if a window is visible using IsWindowVisible
-
-use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, IsWindowVisible};
 
 fn main() {

@@ -8,3 +8,8 @@ fn get_virtual_screen_size() -> (i32, i32) {
     let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
     (width, height)
 }
+
+fn main() {
+    let (width, height) = get_virtual_screen_size();
+    println!("Virtual screen size: {}x{}", width, height);
+}

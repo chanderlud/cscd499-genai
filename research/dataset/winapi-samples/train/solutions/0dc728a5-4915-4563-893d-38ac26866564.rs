@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 use std::thread;
-use windows::core::{PCWSTR, Result};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_PIPE_CONNECTED};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL,

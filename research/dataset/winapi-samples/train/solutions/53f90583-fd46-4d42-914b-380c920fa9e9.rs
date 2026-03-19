@@ -1,7 +1,7 @@
 use std::ffi::{c_void, CString};
 use std::ptr;
 use windows::core::{Error, Result, PCSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE, LPARAM, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::Memory::{
     CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, PUTTY_IPC_MAXLEN) };
     if view.Value.is_null() {
         unsafe {
-            CloseHandle(handle);
+            let _ = CloseHandle(handle);
         }
         return Err(Error::from_thread());
     }
@@ -77,8 +77,8 @@ fn main() -> Result<()> {
 
     if result.0 == 0 {
         unsafe {
-            UnmapViewOfFile(view);
-            CloseHandle(handle);
+            let _ = UnmapViewOfFile(view);
+            let _ = CloseHandle(handle);
         }
         return Err(Error::from_thread());
     }
@@ -93,8 +93,8 @@ fn main() -> Result<()> {
 
     // Clean up
     unsafe {
-        UnmapViewOfFile(view);
-        CloseHandle(handle);
+        let _ = UnmapViewOfFile(view);
+        let _ = CloseHandle(handle);
     }
 
     Ok(())

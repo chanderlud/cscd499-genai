@@ -5,7 +5,7 @@ use std::sync::{
 use windows::core::{Result, HSTRING};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
-use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+use windows::UI::Notifications::{ToastNotification, ToastNotificationManager, ToastNotifier};
 
 static TOAST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -18,9 +18,8 @@ fn xml_escape(s: &str) -> String {
 }
 
 pub struct ProgressToast {
-    app_id: HSTRING,
     tag: String,
-    notifier: windows::UI::Notifications::ToastNotifier,
+    notifier: ToastNotifier,
     toast: Arc<Mutex<Option<ToastNotification>>>,
     title: String,
     body: Arc<Mutex<Option<String>>>,
@@ -42,7 +41,6 @@ impl ProgressToast {
         notifier.Show(&toast)?;
 
         Ok(Self {
-            app_id: app_id_hstring,
             tag,
             notifier,
             toast: Arc::new(Mutex::new(Some(toast))),

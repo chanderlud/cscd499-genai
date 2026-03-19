@@ -1,5 +1,4 @@
 use windows::core::Result;
-use windows::Win32::Foundation::GetLastError;
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
 fn main() -> Result<()> {

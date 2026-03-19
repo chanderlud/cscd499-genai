@@ -5,7 +5,7 @@ use windows::Win32::Security::Cryptography::*;
 
 // Thread-local BCrypt algorithm provider for AES-GCM
 thread_local! {
-    static AES_GCM_ALG: RefCell<Option<BCRYPT_ALG_HANDLE>> = RefCell::new(None);
+    static AES_GCM_ALG: RefCell<Option<BCRYPT_ALG_HANDLE>> = const { RefCell::new(None) };
 }
 
 fn get_aes_gcm_provider() -> Result<BCRYPT_ALG_HANDLE> {
@@ -50,7 +50,7 @@ fn get_aes_gcm_provider() -> Result<BCRYPT_ALG_HANDLE> {
         let status = unsafe { BCryptSetProperty(handle, w!("ChainingMode"), chain_mode_bytes, 0) };
 
         if status != STATUS_SUCCESS {
-            unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
+            let _ = unsafe { BCryptCloseAlgorithmProvider(alg_handle, 0) };
             return Err(Error::from_hresult(status.to_hresult()));
         }
 
@@ -64,7 +64,7 @@ struct KeyGuard(BCRYPT_KEY_HANDLE);
 
 impl Drop for KeyGuard {
     fn drop(&mut self) {
-        unsafe { BCryptDestroyKey(self.0) };
+        let _ = unsafe { BCryptDestroyKey(self.0) };
     }
 }
 

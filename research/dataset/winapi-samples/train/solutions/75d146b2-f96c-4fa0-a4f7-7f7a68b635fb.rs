@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
-use windows::core::{Error, Result, PCWSTR};
+use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_SHARE_READ,
@@ -39,17 +39,13 @@ pub fn file_checksum(path: &str) -> Result<u8> {
 
         // SAFETY: We're calling ReadFile with a valid handle and buffer.
         // The buffer pointer and size are valid for the duration of the call.
-        let result = unsafe {
+        unsafe {
             ReadFile(
                 handle,
                 Some(&mut buffer),
                 Some(&mut bytes_read as *mut u32),
                 None,
-            )
-        };
-
-        if let Err(e) = result {
-            return Err(e);
+            )?;
         }
 
         if bytes_read == 0 {

@@ -4,7 +4,7 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_DH_PRIVATE_MAGIC, BCRYPT_KEY_HANDLE,
 };
 
-fn import_dh_private_key(
+pub fn import_dh_private_key(
     alg_handle: BCRYPT_ALG_HANDLE,
     p: &[u8],
     g: &[u8],

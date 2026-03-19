@@ -1,8 +1,8 @@
-use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::PCWSTR;
+use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::{CloseHandle, ERROR_MOD_NOT_FOUND, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_MODE, OPEN_ALWAYS,
@@ -14,36 +14,31 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 
-fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
+pub(crate) fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(once(0)).collect()
 }
 
-// Simple RAII guard for HANDLE cleanup
-struct HandleGuard(HANDLE);
+pub(crate) struct HandleGuard(HANDLE);
 impl Drop for HandleGuard {
     fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
-        };
+        let _ = unsafe { CloseHandle(self.0) };
     }
 }
 
-fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
-    // Open the target process with required access rights
+pub fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
     let process_handle =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) }?;
     let _process_guard = HandleGuard(process_handle);
 
-    // Create a snapshot of the process's modules
     let snapshot =
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) }?;
     let _snapshot_guard = HandleGuard(snapshot);
 
-    // Initialize module entry structure
-    let mut module_entry = MODULEENTRY32W::default();
-    module_entry.dwSize = std::mem::size_of::<MODULEENTRY32W>() as u32;
+    let mut module_entry = MODULEENTRY32W {
+        dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
+        ..Default::default()
+    };
 
-    // Get the first module in the snapshot
     let found = unsafe { Module32FirstW(snapshot, &mut module_entry) }.is_ok();
     if !found {
         return Err(Error::from_hresult(HRESULT::from_win32(
@@ -51,10 +46,8 @@ fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
         )));
     }
 
-    // Iterate through modules to find the target
     loop {
-        // Compare module names (case-insensitive)
-        let current_name = unsafe {
+        let current_name = {
             let len = module_entry
                 .szModule
                 .iter()
@@ -64,15 +57,12 @@ fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
         };
 
         if current_name.eq_ignore_ascii_case(module_name) {
-            // Found the target module
             let base_address = module_entry.modBaseAddr;
             let module_size = module_entry.modBaseSize as usize;
 
-            // Allocate buffer for module memory
             let mut buffer = vec![0u8; module_size];
             let mut bytes_read = 0usize;
 
-            // Read the module's memory
             let success = unsafe {
                 ReadProcessMemory(
                     process_handle,
@@ -85,10 +75,11 @@ fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
             .is_ok();
 
             if !success {
-                return Err(Error::from_thread());
+                return Err(Error::from_hresult(HRESULT::from_win32(unsafe {
+                    windows::Win32::Foundation::GetLastError().0
+                })));
             }
 
-            // Create output file
             let output_filename = format!("{}.dump", module_name);
             let output_path = Path::new(&output_filename);
             let file_handle = unsafe {
@@ -104,7 +95,6 @@ fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
             }?;
             let _file_guard = HandleGuard(file_handle);
 
-            // Write the buffer to file
             let mut bytes_written = 0u32;
             unsafe {
                 WriteFile(file_handle, Some(&buffer), Some(&mut bytes_written), None)?;
@@ -113,14 +103,12 @@ fn dump_remote_module(pid: u32, module_name: &str) -> Result<()> {
             return Ok(());
         }
 
-        // Move to next module
         let next_found = unsafe { Module32NextW(snapshot, &mut module_entry) }.is_ok();
         if !next_found {
             break;
         }
     }
 
-    // Module not found
     Err(Error::from_hresult(HRESULT::from_win32(
         ERROR_MOD_NOT_FOUND.0,
     )))

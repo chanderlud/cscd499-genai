@@ -2,7 +2,7 @@ use windows::core::{Error, Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{E_INVALIDARG, STATUS_SUCCESS};
 use windows::Win32::Security::Cryptography::*;
 
-fn hkdf_derive(
+pub fn hkdf_derive(
     algorithm: PCWSTR,
     ikm: &[u8],
     salt: Option<&[u8]>,
@@ -61,7 +61,7 @@ fn hkdf_derive(
     hkdf_expand(alg_handle, &prk, info, okm_length, hash_length)
 }
 
-fn hkdf_extract(
+pub fn hkdf_extract(
     alg_handle: BCRYPT_ALG_HANDLE,
     ikm: &[u8],
     salt: Option<&[u8]>,
@@ -97,7 +97,7 @@ fn hkdf_extract(
     Ok(prk)
 }
 
-fn hkdf_expand(
+pub fn hkdf_expand(
     alg_handle: BCRYPT_ALG_HANDLE,
     prk: &[u8],
     info: Option<&[u8]>,
@@ -105,7 +105,7 @@ fn hkdf_expand(
     hash_length: usize,
 ) -> Result<Vec<u8>> {
     let info = info.unwrap_or(&[]);
-    let iterations = (okm_length + hash_length - 1) / hash_length; // ceil(okm_length / hash_length)
+    let iterations = okm_length.div_ceil(hash_length);
 
     let mut okm = Vec::with_capacity(okm_length);
     let mut t = Vec::new(); // T(i) from RFC 5869
@@ -156,8 +156,7 @@ fn hkdf_expand(
     Ok(okm)
 }
 
-// RAII guards for BCrypt handles
-struct AlgorithmHandleGuard(BCRYPT_ALG_HANDLE);
+pub struct AlgorithmHandleGuard(BCRYPT_ALG_HANDLE);
 impl Drop for AlgorithmHandleGuard {
     fn drop(&mut self) {
         unsafe {
@@ -166,7 +165,7 @@ impl Drop for AlgorithmHandleGuard {
     }
 }
 
-struct HashHandleGuard(BCRYPT_HASH_HANDLE);
+pub struct HashHandleGuard(BCRYPT_HASH_HANDLE);
 impl Drop for HashHandleGuard {
     fn drop(&mut self) {
         unsafe {

@@ -85,3 +85,16 @@ fn import_dsa_public_key(
     // SAFETY: key_handle is valid after successful BCryptImportKeyPair
     Ok(unsafe { Owned::new(key_handle) })
 }
+
+// Added a main function to use the import_dsa_public_key function
+fn main() -> Result<()> {
+    // Example usage (dummy values)
+    let alg_handle = BCRYPT_ALG_HANDLE::default();
+    let p = [0u8; 128];
+    let q = [0u8; 20];
+    let g = [0u8; 128];
+    let y = [0u8; 128];
+
+    let _key = import_dsa_public_key(alg_handle, &p, &q, &g, &y)?;
+    Ok(())
+}

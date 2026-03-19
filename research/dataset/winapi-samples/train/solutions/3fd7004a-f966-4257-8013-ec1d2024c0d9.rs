@@ -6,9 +6,8 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_HANDLE_EOF, ERROR_INVALID_PARAMETER, GENERIC_READ, HANDLE,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, GetFileSizeEx, ReadFile, SetFilePointer, WriteFile, CREATE_ALWAYS,
-    FILE_ATTRIBUTE_NORMAL, FILE_BEGIN, FILE_GENERIC_WRITE, FILE_SHARE_MODE, FILE_SHARE_READ,
-    INVALID_SET_FILE_POINTER, OPEN_EXISTING,
+    CreateFileW, GetFileSizeEx, ReadFile, WriteFile, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+    FILE_GENERIC_WRITE, FILE_SHARE_MODE, FILE_SHARE_READ, OPEN_EXISTING,
 };
 
 fn wide_null(s: &OsStr) -> Vec<u16> {
@@ -74,20 +73,8 @@ fn write_file(handle: HANDLE, buffer: &[u8]) -> Result<()> {
     }
 }
 
-fn set_file_pointer(handle: HANDLE, offset: u64) -> Result<()> {
-    unsafe {
-        let result = SetFilePointer(handle, offset as i32, None, FILE_BEGIN);
-
-        if result == INVALID_SET_FILE_POINTER {
-            Err(Error::from_thread()) // Fixed: Use from_thread() instead of from_win32()
-        } else {
-            Ok(())
-        }
-    }
-}
-
 fn close_handle(handle: HANDLE) {
-    unsafe { CloseHandle(handle) };
+    let _ = unsafe { CloseHandle(handle) };
 }
 
 pub fn split_file_into_parts(source_path: &str, num_parts: u32) -> Result<u32> {

@@ -10,18 +10,14 @@ impl Drop for ComGuard {
     }
 }
 
-fn remove_toast_by_tag(app_id: &str, tag: &str, group: Option<&str>) -> Result<()> {
-    // Initialize COM with apartment threading
+fn remove_toast_by_tag(_app_id: &str, tag: &str, group: Option<&str>) -> Result<()> {
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok()?;
     let _guard = ComGuard;
 
-    // Get notification history for the specified app
     let history = ToastNotificationManager::History()?;
 
-    // Convert strings to HSTRING for WinRT
     let tag_hstring = HSTRING::from(tag);
 
-    // Remove toast based on group presence
     match group {
         Some(group_str) => {
             let group_hstring = HSTRING::from(group_str);
@@ -33,4 +29,8 @@ fn remove_toast_by_tag(app_id: &str, tag: &str, group: Option<&str>) -> Result<(
     }
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    remove_toast_by_tag("MyApp", "notification_tag", Some("notification_group"))
 }

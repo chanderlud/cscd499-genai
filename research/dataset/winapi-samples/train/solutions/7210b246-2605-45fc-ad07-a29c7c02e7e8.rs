@@ -6,6 +6,20 @@ use windows::Win32::System::Memory::{
     PAGE_PROTECTION_FLAGS,
 };
 
+/// Hook a function in a loaded module to redirect execution to a detour.
+///
+/// # Safety
+///
+/// This function is unsafe because it:
+/// - Modifies memory protection of another module's code.
+/// - Writes machine code directly into the target function.
+/// - Assumes the target function is at least 5 bytes and not part of a hot patch.
+/// - Requires that `detour` points to valid executable code.
+/// - Requires that the caller has sufficient privileges to perform these operations.
+///
+/// The caller must ensure the target function exists and is not part of a critical system
+/// routine. The returned trampoline pointer must be stored and used to call the original
+/// function from within the detour.
 pub unsafe fn intercept_function(
     module_name: &str,
     function_name: &str,

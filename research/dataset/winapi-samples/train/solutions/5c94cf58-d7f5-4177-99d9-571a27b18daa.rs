@@ -1,5 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
-use windows::core::{Error, Result, HSTRING};
+use windows::core::{Result, HSTRING};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::DateTime;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};

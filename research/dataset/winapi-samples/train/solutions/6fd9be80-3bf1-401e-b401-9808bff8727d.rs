@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, HRESULT};
+use windows::core::Result;
 
 pub fn ok_if_error_in_list<const N: usize>(
     result: Result<()>,

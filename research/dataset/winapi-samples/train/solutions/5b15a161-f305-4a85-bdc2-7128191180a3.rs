@@ -7,8 +7,9 @@ use windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware;
 
 fn main() -> Result<()> {
     // SAFETY: Calling SetProcessDPIAware is safe as long as we are in a Windows GUI thread.
-    unsafe {
-        SetProcessDPIAware();
+    let success = unsafe { SetProcessDPIAware() };
+    if !success.as_bool() {
+        return Err(Error::from_thread());
     }
 
     // Get primary monitor handle

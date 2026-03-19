@@ -18,10 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_VSCROLL,
 };
 
-const TEXT_BOX_HEIGHT: i32 = 36;
-
 struct UIElement {
-    hwnd: HWND,
     original_proc_ptr: isize,
 }
 
@@ -62,7 +59,7 @@ fn main() -> windows::core::Result<()> {
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -101,20 +98,16 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 .unwrap();
 
                 let original_proc_ptr =
-                    SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as isize);
+                    SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as *const () as isize);
 
                 let app_context = Box::new(AppContext {
-                    list_box: UIElement {
-                        hwnd: list_box,
-                        original_proc_ptr,
-                    },
+                    list_box: UIElement { original_proc_ptr },
                 });
 
                 let app_context_ptr = Box::into_raw(app_context);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_context_ptr as isize);
                 SetWindowLongPtrW(list_box, GWLP_USERDATA, app_context_ptr as isize);
 
-                // Add some items to the list box
                 for i in 0..10 {
                     let item = format!("Item {}", i + 1);
                     let wide_item: Vec<u16> =
@@ -127,7 +120,6 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     );
                 }
 
-                // Auto-select first item
                 SendMessageW(list_box, LB_SETCURSEL, Some(WPARAM(0)), Some(LPARAM(0)));
             }
             LRESULT(0)
@@ -166,7 +158,6 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
 
         let app_context = &*app_context_ptr;
 
-        // Handle escape key to exit
         if msg == WM_KEYUP {
             let key = wparam.0 as u32;
             if key == VK_ESCAPE.0 as u32 {
@@ -175,13 +166,11 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
         }
 
-        // Handle navigation keys
         if msg == WM_KEYDOWN {
             let key = wparam.0 as u32;
             let vkey = VIRTUAL_KEY(key as u16);
 
             if vkey == VK_UP || vkey == VK_DOWN {
-                // Let the default list box procedure handle navigation
                 let proc = std::mem::transmute::<
                     isize,
                     Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,
@@ -190,7 +179,6 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
         }
 
-        // Handle return key to select item
         if msg == WM_KEYUP {
             let key = wparam.0 as u32;
             let vkey = VIRTUAL_KEY(key as u16);
@@ -205,14 +193,12 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                         Some(WPARAM(selected_index as usize)),
                         Some(LPARAM(0)),
                     );
-                    // In a real application, you would use the item data here
                     let _ = ptr;
                 }
                 return LRESULT(0);
             }
         }
 
-        // Call the original window procedure for all other messages
         let proc = std::mem::transmute::<
             isize,
             Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,

@@ -1,4 +1,4 @@
-use windows::{core::*, Win32::System::Com::*, Win32::System::Variant::*, Win32::System::Wmi::*};
+use windows::{Win32::System::Com::*, Win32::System::Variant::*, Win32::System::Wmi::*, core::*};
 
 fn main() -> Result<()> {
     unsafe {
@@ -18,7 +18,7 @@ fn main() -> Result<()> {
 
         let locator: IWbemLocator = CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER)?;
 
-        let server = locator.ConnectServer(
+        let server: IWbemServices = locator.ConnectServer(
             &BSTR::from("root\\cimv2"),
             &BSTR::new(),
             &BSTR::new(),
@@ -32,25 +32,28 @@ fn main() -> Result<()> {
         // ExecQuery example
         //
 
-        let query = server.ExecQuery(
+        let query: IEnumWbemClassObject = server.ExecQuery(
             &BSTR::from("WQL"),
-            &BSTR::from("select Caption from Win32_LogicalDisk"),
+            &BSTR::from("SELECT Caption FROM Win32_LogicalDisk"),
             WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
             None,
         )?;
 
         loop {
-            let mut row = [None; 1];
+            let mut row: [Option<IWbemClassObject>; 1] = [None];
             let mut returned = 0;
+
             query.Next(WBEM_INFINITE, &mut row, &mut returned).ok()?;
 
-            if let Some(row) = &row[0] {
-                let mut value = VARIANT::default();
-                row.Get(w!("Caption"), 0, &mut value, None, None)?;
-                println!("{value}",);
-            } else {
+            if returned == 0 {
                 break;
             }
+
+            let row: IWbemClassObject = row[0].take().unwrap();
+
+            let mut value = VARIANT::default();
+            row.Get(w!("Caption"), 0, &mut value, None, None)?;
+            println!("{value}");
         }
 
         //
@@ -60,7 +63,7 @@ fn main() -> Result<()> {
         let class_name = BSTR::from("Win32_Process");
         let method_name = BSTR::from("Create");
 
-        let mut class = None;
+        let mut class: Option<IWbemClassObject> = None;
         server.GetObject(
             &class_name,
             Default::default(),
@@ -68,16 +71,16 @@ fn main() -> Result<()> {
             Some(&mut class),
             None,
         )?;
-        let class = class.unwrap();
+        let class: IWbemClassObject = class.unwrap();
 
-        let mut input = None;
+        let mut input: Option<IWbemClassObject> = None;
         class.GetMethod(&method_name, 0, &mut input, std::ptr::null_mut())?;
-        let input = input.unwrap();
+        let input: IWbemClassObject = input.unwrap();
 
-        let object = input.SpawnInstance(0)?;
+        let object: IWbemClassObject = input.SpawnInstance(0)?;
         object.Put(w!("CommandLine"), 0, &VARIANT::from("notepad.exe"), 0)?;
 
-        let mut output = None;
+        let mut output: Option<IWbemClassObject> = None;
         server.ExecMethod(
             &class_name,
             &method_name,
@@ -87,12 +90,13 @@ fn main() -> Result<()> {
             Some(&mut output),
             None,
         )?;
-        let output = output.unwrap();
+        let output: IWbemClassObject = output.unwrap();
 
         let mut value = VARIANT::default();
         output.Get(w!("ReturnValue"), 0, &mut value, None, None)?;
         println!("`Create` method return value: {value}");
 
+        CoUninitialize();
         Ok(())
     }
 }

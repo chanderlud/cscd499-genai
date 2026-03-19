@@ -11,11 +11,6 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{iter::once, os::windows::ffi::OsStrExt};
-    s.encode_wide().chain(once(0)).collect()
-}
-
 pub fn show_protocol_toast(
     app_id: &str,
     title: &str,
@@ -44,10 +39,10 @@ pub fn show_protocol_toast(
                 </binding>
             </visual>
             <actions>
-                <action 
-                    activationType="protocol" 
-                    arguments="{}" 
-                    content="{}" 
+                <action
+                    activationType="protocol"
+                    arguments="{}"
+                    content="{}"
                 />
             </actions>
         </toast>"#,

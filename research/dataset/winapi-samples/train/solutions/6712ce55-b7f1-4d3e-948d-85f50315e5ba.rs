@@ -1,7 +1,7 @@
 // Get desktop window rectangle with error handling
 
 use windows::core::Result;
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowRect};
 
 fn get_desktop_window_rect() -> Result<RECT> {

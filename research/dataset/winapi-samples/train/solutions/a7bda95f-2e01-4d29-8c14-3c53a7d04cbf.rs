@@ -76,7 +76,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 // Add primary monitor info as first item
                 let wide_primary = wide_null(primary_info.as_ref());
-                SendMessageW(
+                send_message_w(
                     list_box_hwnd,
                     LB_ADDSTRING,
                     None,
@@ -87,7 +87,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 for i in 1..=9 {
                     let item = format!("Item {}", i);
                     let wide_item = wide_null(item.as_ref());
-                    SendMessageW(
+                    send_message_w(
                         list_box_hwnd,
                         LB_ADDSTRING,
                         None,
@@ -96,8 +96,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 }
 
                 // Subclass the ListBox
-                let old_proc =
-                    SetWindowLongPtrW(list_box_hwnd, GWL_WNDPROC, list_box_proc as usize as isize);
+                let old_proc = SetWindowLongPtrW(
+                    list_box_hwnd,
+                    GWL_WNDPROC,
+                    list_box_proc as *const () as usize as isize,
+                );
                 SetWindowLongPtrW(list_box_hwnd, GWL_USERDATA, old_proc);
 
                 LRESULT(0)
@@ -131,16 +134,16 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                         LRESULT(0)
                     }
                     RETURN => {
-                        let sel = SendMessageW(hwnd, LB_GETCURSEL, None, None);
+                        let sel = send_message_w(hwnd, LB_GETCURSEL, None, None);
                         if sel.0 >= 0 {
-                            let len = SendMessageW(
+                            let len = send_message_w(
                                 hwnd,
                                 LB_GETTEXTLEN,
                                 Some(WPARAM(sel.0 as usize)),
                                 None,
                             );
-                            let mut buf = vec![0u16; (len.0 as usize) + 1];
-                            SendMessageW(
+                            let buf = vec![0u16; (len.0 as usize) + 1];
+                            send_message_w(
                                 hwnd,
                                 LB_GETTEXT,
                                 Some(WPARAM(sel.0 as usize)),
@@ -173,7 +176,7 @@ fn lparam_from_slice(v: &[u16]) -> LPARAM {
     LPARAM(v.as_ptr() as isize)
 }
 
-fn SendMessageW(hwnd: HWND, msg: u32, wparam: Option<WPARAM>, lparam: Option<LPARAM>) -> LRESULT {
+fn send_message_w(hwnd: HWND, msg: u32, wparam: Option<WPARAM>, lparam: Option<LPARAM>) -> LRESULT {
     unsafe { windows::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd, msg, wparam, lparam) }
 }
 
@@ -207,11 +210,11 @@ fn main() -> Result<()> {
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 

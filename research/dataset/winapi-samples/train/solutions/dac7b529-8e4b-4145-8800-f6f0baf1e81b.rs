@@ -44,3 +44,16 @@ fn get_toast_history(app_id: &str) -> Result<Vec<ToastHistoryItem>> {
 
     Ok(result)
 }
+
+fn main() {
+    let app_id = "Your.App.ID";
+    match get_toast_history(app_id) {
+        Ok(notifications) => {
+            println!("Found {} notifications", notifications.len());
+            for notification in notifications {
+                println!("Tag: {}, Group: {:?}", notification.tag, notification.group);
+            }
+        }
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}

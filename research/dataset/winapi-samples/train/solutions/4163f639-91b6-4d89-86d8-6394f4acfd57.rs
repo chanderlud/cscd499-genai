@@ -8,9 +8,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, LoadCursorW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, GWLP_USERDATA, GWL_WNDPROC, IDC_ARROW, LBS_NOTIFY, LB_ADDSTRING, LB_ERR,
-    LB_GETCURSEL, LB_GETITEMDATA, LB_SETCURSEL, LB_SETITEMDATA, MSG, SW_SHOW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CREATE, WM_DESTROY, WM_KEYUP, WM_PAINT, WNDCLASSW, WS_CHILD, WS_POPUP,
-    WS_VISIBLE, WS_VSCROLL,
+    LB_GETCURSEL, LB_SETCURSEL, LB_SETITEMDATA, MSG, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CREATE, WM_DESTROY, WM_KEYUP, WM_PAINT, WNDCLASSW, WS_CHILD, WS_POPUP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 
 struct WindowInfo {
@@ -54,7 +54,7 @@ fn main() -> windows::core::Result<()> {
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -91,11 +91,11 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
                 let windows = vec![
                     WindowInfo {
-                        hwnd: HWND(0x1234 as *mut _), // Dummy handle for example
+                        hwnd: HWND(0x1234 as *mut _),
                         title: wide_null("Notepad"),
                     },
                     WindowInfo {
-                        hwnd: HWND(0x5678 as *mut _), // Dummy handle for example
+                        hwnd: HWND(0x5678 as *mut _),
                         title: wide_null("Calculator"),
                     },
                 ];
@@ -122,7 +122,7 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_context_ptr as isize);
                 SetWindowLongPtrW(list_box, GWLP_USERDATA, app_context_ptr as isize);
 
-                SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as isize);
+                SetWindowLongPtrW(list_box, GWL_WNDPROC, list_box_proc as *const () as isize);
             }
             LRESULT(0)
         }
@@ -161,15 +161,15 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 let selected_index =
                     SendMessageW(hwnd, LB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))).0 as i32;
                 if selected_index != LB_ERR {
-                    let window_handle = SendMessageW(
-                        hwnd,
-                        LB_GETITEMDATA,
-                        Some(WPARAM(selected_index as usize)),
-                        Some(LPARAM(0)),
-                    );
-                    let target_hwnd = HWND(window_handle.0 as *mut _);
-                    // Bring the selected window to the foreground
-                    let _ = SetForegroundWindow(target_hwnd);
+                    let app_context_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppContext;
+                    if !app_context_ptr.is_null() {
+                        let app_context = &*app_context_ptr;
+                        if let Some(window_info) = app_context.windows.get(selected_index as usize)
+                        {
+                            let _ = SetForegroundWindow(window_info.hwnd);
+                        }
+                    }
                 }
             }
             return LRESULT(0);
@@ -184,7 +184,10 @@ extern "system" fn list_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         if !app_context_ptr.is_null() {
             let original_proc = (*app_context_ptr).list_box;
             let proc_ptr = GetWindowLongPtrW(original_proc, GWL_WNDPROC);
-            let proc = Some(std::mem::transmute(proc_ptr));
+            let proc = Some(std::mem::transmute::<
+                isize,
+                unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+            >(proc_ptr));
             CallWindowProcW(proc, hwnd, msg, wparam, lparam)
         } else {
             DefWindowProcW(hwnd, msg, wparam, lparam)

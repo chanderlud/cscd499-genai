@@ -25,7 +25,6 @@ struct MagnifierData {
     height: i32,
     hdc_mem: HDC,
     hbitmap: HBITMAP,
-    bits: *mut u8,
 }
 
 fn wide_null(s: &str) -> Vec<u16> {
@@ -42,7 +41,7 @@ fn create_dib_section(hdc: HDC, width: i32, height: i32) -> Result<(HBITMAP, *mu
                 biHeight: -height, // top-down
                 biPlanes: 1,
                 biBitCount: 32,
-                biCompression: BI_RGB.0 as u32,
+                biCompression: BI_RGB.0,
                 biSizeImage: 0,
                 biXPelsPerMeter: 0,
                 biYPelsPerMeter: 0,
@@ -162,7 +161,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = DeleteDC(data.hdc_mem);
                 let _ = DeleteObject(data.hbitmap.into());
             }
-            KillTimer(Some(hwnd), TIMER_ID);
+            let _ = KillTimer(Some(hwnd), TIMER_ID);
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -173,7 +172,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let mut ps = PAINTSTRUCT::default();
                 let _hdc = BeginPaint(hwnd, &mut ps);
                 // Nothing to paint - layered window handles it
-                EndPaint(hwnd, &ps);
+                let _ = EndPaint(hwnd, &ps);
             }
             LRESULT(0)
         }
@@ -224,7 +223,7 @@ pub fn create_magnifier_overlay(width: i32, height: i32, initial_zoom: f32) -> R
         // Create memory DC and DIB section for rendering
         let hdc_screen = GetDC(None);
         let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
-        let (hbitmap, bits) = create_dib_section(hdc_mem, width, height)?;
+        let (hbitmap, _) = create_dib_section(hdc_mem, width, height)?;
         ReleaseDC(None, hdc_screen);
 
         let old_bitmap = SelectObject(hdc_mem, hbitmap.into());
@@ -240,7 +239,6 @@ pub fn create_magnifier_overlay(width: i32, height: i32, initial_zoom: f32) -> R
             height,
             hdc_mem,
             hbitmap,
-            bits,
         });
 
         let data_ptr = Box::into_raw(data);
@@ -266,7 +264,7 @@ pub fn create_magnifier_overlay(width: i32, height: i32, initial_zoom: f32) -> R
             return Err(Error::from_thread());
         }
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         Ok(hwnd)
     }
@@ -277,7 +275,7 @@ pub fn run_message_loop() -> Result<()> {
     unsafe {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
         Ok(())

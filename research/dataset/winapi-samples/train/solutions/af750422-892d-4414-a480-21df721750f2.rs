@@ -1,9 +1,6 @@
 use windows::{
-    core::{s, Error, Result, PCSTR},
-    Win32::{
-        Foundation::HMODULE,
-        System::LibraryLoader::{GetProcAddress, LoadLibraryA},
-    },
+    core::{s, Result, PCSTR},
+    Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA},
 };
 
 fn main() -> Result<()> {
@@ -20,14 +17,11 @@ fn main() -> Result<()> {
     };
 
     match func_ptr {
-        Some(ptr) => {
+        Some(_ptr) => {
             println!(
                 "Successfully found function at ordinal {}",
                 UXTHEME_ALLOWDARKMODEFORAPP_ORDINAL
             );
-            // In real code, you would transmute and call the function here
-            // type AllowDarkModeForApp = unsafe extern "system" fn(bool) -> bool;
-            // let func: AllowDarkModeForApp = unsafe { std::mem::transmute(ptr) };
         }
         None => {
             println!(

@@ -1,4 +1,3 @@
-use std::mem;
 use windows::core::{Error, Result, HRESULT};
 
 #[derive(Debug, Clone)]
@@ -19,7 +18,7 @@ const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
 
 fn read_u16(data: &[u8], offset: usize) -> Result<u16> {
     data.get(offset..offset + 2)
-        .ok_or_else(|| Error::new(HRESULT::from_win32(0x80070057), "Invalid offset for u16")) // E_INVALIDARG
+        .ok_or_else(|| Error::new(HRESULT::from_win32(0x80070057), "Invalid offset for u16"))
         .map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()))
 }
 
@@ -36,13 +35,12 @@ fn rva_to_file_offset(rva: u32, sections: &[(u32, u32, u32)]) -> Result<usize> {
         }
     }
     Err(Error::new(
-        HRESULT::from_win32(0x8007000B), // ERROR_BAD_FORMAT
+        HRESULT::from_win32(0x8007000B),
         "RVA not found in any section",
     ))
 }
 
 pub fn parse_base_relocations(data: &[u8]) -> Result<Vec<RelocationBlock>> {
-    // Validate DOS signature
     let dos_signature = read_u16(data, 0)?;
     if dos_signature != DOS_SIGNATURE {
         return Err(Error::new(
@@ -51,10 +49,8 @@ pub fn parse_base_relocations(data: &[u8]) -> Result<Vec<RelocationBlock>> {
         ));
     }
 
-    // Get NT headers offset
     let nt_offset = read_u32(data, 0x3C)? as usize;
 
-    // Validate NT signature
     let nt_signature = read_u32(data, nt_offset)?;
     if nt_signature != NT_SIGNATURE {
         return Err(Error::new(
@@ -63,13 +59,12 @@ pub fn parse_base_relocations(data: &[u8]) -> Result<Vec<RelocationBlock>> {
         ));
     }
 
-    // Determine PE type (32-bit or 64-bit)
-    let magic_offset = nt_offset + 24; // Offset to OptionalHeader.Magic
+    let magic_offset = nt_offset + 24;
     let magic = read_u16(data, magic_offset)?;
 
-    let (is_64bit, data_dir_offset) = match magic {
-        0x10B => (false, magic_offset + 96), // PE32
-        0x20B => (true, magic_offset + 112), // PE32+
+    let data_dir_offset = match magic {
+        0x10B => magic_offset + 96,  // PE32
+        0x20B => magic_offset + 112, // PE32+
         _ => {
             return Err(Error::new(
                 HRESULT::from_win32(0x8007000B),
@@ -78,11 +73,9 @@ pub fn parse_base_relocations(data: &[u8]) -> Result<Vec<RelocationBlock>> {
         }
     };
 
-    // Get number of sections
     let number_of_sections = read_u16(data, nt_offset + 6)?;
     let size_of_optional_header = read_u16(data, nt_offset + 20)?;
 
-    // Parse section headers
     let section_headers_offset = nt_offset + 24 + size_of_optional_header as usize;
     let mut sections = Vec::new();
 
@@ -94,25 +87,21 @@ pub fn parse_base_relocations(data: &[u8]) -> Result<Vec<RelocationBlock>> {
         sections.push((virtual_address, virtual_size, raw_data_offset));
     }
 
-    // Get relocation data directory
     let reloc_dir_offset = data_dir_offset + IMAGE_DIRECTORY_ENTRY_BASERELOC * 8;
     let reloc_rva = read_u32(data, reloc_dir_offset)?;
     let reloc_size = read_u32(data, reloc_dir_offset + 4)?;
 
     if reloc_rva == 0 || reloc_size == 0 {
-        return Ok(Vec::new()); // No relocations
+        return Ok(Vec::new());
     }
 
-    // Convert RVA to file offset
     let reloc_file_offset = rva_to_file_offset(reloc_rva, &sections)?;
 
-    // Parse relocation blocks
     let mut blocks = Vec::new();
     let mut current_offset = reloc_file_offset;
     let end_offset = reloc_file_offset + reloc_size as usize;
 
     while current_offset < end_offset {
-        // Read block header
         let page_rva = read_u32(data, current_offset)?;
         let block_size = read_u32(data, current_offset + 4)?;
 
@@ -126,7 +115,6 @@ pub fn parse_base_relocations(data: &[u8]) -> Result<Vec<RelocationBlock>> {
         let entry_count = (block_size as usize - 8) / 2;
         let mut entries = Vec::with_capacity(entry_count);
 
-        // Parse entries
         for i in 0..entry_count {
             let entry_offset = current_offset + 8 + i * 2;
             let entry_data = read_u16(data, entry_offset)?;

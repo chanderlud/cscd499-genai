@@ -16,13 +16,11 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
     s.encode_wide().chain(once(0)).collect()
 }
 
-fn get_str_from_buffer(buffer_with_null_ter: &Vec<u16>) -> String {
-    //exclude the \0 terminator
+fn get_str_from_buffer(buffer_with_null_ter: &[u16]) -> String {
     String::from_utf16_lossy(&buffer_with_null_ter[0..buffer_with_null_ter.len() - 1])
 }
 
 struct AppContext {
-    edit_control: HWND,
     original_edit_proc: isize,
 }
 
@@ -55,14 +53,14 @@ extern "system" fn main_window_proc(
                 .unwrap();
 
                 // Store original edit control procedure
-                let original_edit_proc =
-                    SetWindowLongPtrW(edit_control, GWL_WNDPROC, edit_control_proc as isize);
+                let original_edit_proc = SetWindowLongPtrW(
+                    edit_control,
+                    GWL_WNDPROC,
+                    edit_control_proc as *const () as isize,
+                );
 
                 // Create app context
-                let app_context = Box::new(AppContext {
-                    edit_control,
-                    original_edit_proc,
-                });
+                let app_context = Box::new(AppContext { original_edit_proc });
 
                 // Store app context in main window
                 let app_context_ptr = Box::into_raw(app_context);
@@ -79,7 +77,6 @@ extern "system" fn main_window_proc(
             }
 
             WM_DESTROY => {
-                // Clean up app context
                 let app_context_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppContext;
                 if !app_context_ptr.is_null() {
                     let _ = Box::from_raw(app_context_ptr);
@@ -117,15 +114,18 @@ extern "system" fn edit_control_proc(
 
                     // Set parent window title to edit control text
                     let wide_text = wide_null(std::ffi::OsStr::new(&text));
-                    SetWindowTextW(parent, windows::core::PCWSTR(wide_text.as_ptr()));
+                    let _ = SetWindowTextW(parent, windows::core::PCWSTR(wide_text.as_ptr()));
                 } else {
                     // Clear title if edit control is empty
-                    SetWindowTextW(parent, w!(""));
+                    let _ = SetWindowTextW(parent, w!(""));
                 }
             }
 
             // Call original edit control procedure
-            let original_proc = Some(std::mem::transmute(app_context.original_edit_proc));
+            let original_proc = Some(std::mem::transmute::<
+                isize,
+                unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+            >(app_context.original_edit_proc));
             CallWindowProcW(original_proc, hwnd, msg, wparam, lparam)
         } else {
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -164,7 +164,7 @@ fn main() -> Result<()> {
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {

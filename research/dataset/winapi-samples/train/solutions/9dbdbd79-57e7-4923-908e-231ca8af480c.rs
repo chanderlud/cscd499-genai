@@ -1,7 +1,4 @@
-// Get monitor information for a window using MonitorFromWindow and GetMonitorInfoW
-
 use windows::core::{Error, Result};
-use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
