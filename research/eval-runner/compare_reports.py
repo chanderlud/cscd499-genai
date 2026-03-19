@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print per-problem breakdown tables for each (benchmark, model).",
     )
+    parser.add_argument(
+        "--compile-errors",
+        action="store_true",
+        help="Print detailed compile-error analysis per benchmark and model.",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +79,20 @@ def format_top_codes(counter: Counter[str], limit: int = 5) -> str:
     if not items:
         return "-"
     return ", ".join(f"{code}:{count}" for code, count in items)
+
+
+def normalize_error_message(msg: str) -> str:
+    """Normalize a compiler error message for clustering.
+
+    Replaces backtick-quoted content with <X>, strips error code brackets,
+    lowercases, and truncates to 120 chars.
+    """
+    text = re.sub(r"`[^`]*`", "<X>", msg)
+    text = re.sub(r"\[E\d+\]", "", text)
+    text = text.lower().strip()
+    if len(text) > 120:
+        text = text[:120]
+    return text
 
 
 def add_codes(counter: Counter[str], value: Any) -> None:
@@ -148,6 +168,12 @@ def aggregate_reports(
                 "pass_at_k_numer": 0,
                 "top_build_codes": Counter(),
                 "top_clippy_codes": Counter(),
+                "build_error_codes": Counter(),
+                "build_error_messages": Counter(),
+                "no_eval_count": 0,
+                "build_fail_all_count": 0,
+                "total_attempts": 0,
+                "total_build_fail_attempts": 0,
                 "meta_k_values": set(),
                 "meta_started_min": None,
                 "meta_started_max": None,
@@ -203,6 +229,45 @@ def aggregate_reports(
             add_codes(group["top_build_codes"], stats.get("top_build_codes"))
             add_codes(group["top_clippy_codes"], stats.get("top_clippy_codes"))
 
+            attempts = problem.get("attempts", [])
+            if not isinstance(attempts, list):
+                attempts = []
+            problem_build_fail_count = 0
+            for attempt in attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                group["total_attempts"] += 1
+                eval_data = attempt.get("eval")
+                if eval_data is None:
+                    group["no_eval_count"] += 1
+                    problem_build_fail_count += 1
+                    continue
+                if not isinstance(eval_data, dict):
+                    continue
+                build = eval_data.get("build")
+                if not isinstance(build, dict):
+                    continue
+                if not build.get("ok", False):
+                    group["total_build_fail_attempts"] += 1
+                    problem_build_fail_count += 1
+                    diagnostics = build.get("diagnostics")
+                    if isinstance(diagnostics, dict):
+                        by_code = diagnostics.get("by_code")
+                        if isinstance(by_code, dict):
+                            for code, count in by_code.items():
+                                group["build_error_codes"][str(code)] += safe_int(count, 1)
+                        items = diagnostics.get("items")
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, dict) and item.get("level") == "error":
+                                    raw_msg = item.get("message", "")
+                                    if raw_msg:
+                                        normalized = normalize_error_message(raw_msg)
+                                        if normalized:
+                                            group["build_error_messages"][normalized] += 1
+            if len(attempts) > 0 and problem_build_fail_count == len(attempts):
+                group["build_fail_all_count"] += 1
+
             problem_id = (
                 problem.get("problem_id")
                 or problem.get("id")
@@ -224,6 +289,8 @@ def aggregate_reports(
 def summarize(group: dict[str, Any]) -> dict[str, Any]:
     total = group["problems"]
     denom = float(total) if total > 0 else 1.0
+    total_attempts = group["total_attempts"]
+    att_denom = float(total_attempts) if total_attempts > 0 else 1.0
     return {
         "benchmark": group["benchmark"],
         "model": group["model"],
@@ -238,6 +305,13 @@ def summarize(group: dict[str, Any]) -> dict[str, Any]:
         "top_clippy_codes": top_counter_items(group["top_clippy_codes"], 5),
         "top_build_codes_str": format_top_codes(group["top_build_codes"], 5),
         "top_clippy_codes_str": format_top_codes(group["top_clippy_codes"], 5),
+        "build_fail_rate": group["total_build_fail_attempts"] / att_denom if total_attempts else 0.0,
+        "no_eval_rate": group["no_eval_count"] / att_denom if total_attempts else 0.0,
+        "build_fail_all_pct": group["build_fail_all_count"] / denom if total else 0.0,
+        "top_build_error_codes": top_counter_items(group["build_error_codes"], 10),
+        "top_build_error_messages": top_counter_items(group["build_error_messages"], 10),
+        "top_build_error_codes_str": format_top_codes(group["build_error_codes"], 10),
+        "top_build_error_messages_str": format_top_codes(group["build_error_messages"], 10),
     }
 
 
@@ -253,6 +327,7 @@ def print_main_table(by_benchmark: dict[str, list[dict[str, Any]]]) -> None:
     model_w = 25
     problems_w = 8
     pct_w = 7
+    fail_w = 10
     clippy_w = 10
 
     header = (
@@ -262,6 +337,8 @@ def print_main_table(by_benchmark: dict[str, list[dict[str, Any]]]) -> None:
         f"{'pass@k'.rjust(pct_w)} | "
         f"{'Build%'.rjust(pct_w)} | "
         f"{'Test%'.rjust(pct_w)} | "
+        f"{'BuildFail%'.rjust(fail_w)} | "
+        f"{'0/k%'.rjust(pct_w)} | "
         f"{'ClippyWarn'.rjust(clippy_w)} | "
         f"{'ClippyErr'.rjust(clippy_w)}"
     )
@@ -283,6 +360,8 @@ def print_main_table(by_benchmark: dict[str, list[dict[str, Any]]]) -> None:
                 f"{fmt_pct(row['pass_at_k']).rjust(pct_w)} | "
                 f"{fmt_pct(row['avg_build_rate']).rjust(pct_w)} | "
                 f"{fmt_pct(row['avg_test_rate']).rjust(pct_w)} | "
+                f"{fmt_pct(row['build_fail_rate']).rjust(fail_w)} | "
+                f"{fmt_pct(row['build_fail_all_pct']).rjust(pct_w)} | "
                 f"{fmt_num(row['avg_clippy_warnings'], clippy_w, 2).rjust(clippy_w)} | "
                 f"{fmt_num(row['avg_clippy_errors'], clippy_w, 2).rjust(clippy_w)}"
             )
@@ -299,6 +378,33 @@ def print_top_codes(by_benchmark: dict[str, list[dict[str, Any]]]) -> None:
             print(f"- {row['model']}")
             print(f"  build:  {row['top_build_codes_str']}")
             print(f"  clippy: {row['top_clippy_codes_str']}")
+
+
+def print_compile_error_analysis(by_benchmark: dict[str, list[dict[str, Any]]]) -> None:
+    for benchmark in sorted(by_benchmark):
+        print(f"\n=== Compile Error Analysis: {benchmark} ===")
+        rows = sorted(
+            by_benchmark[benchmark],
+            key=lambda row: (-row["build_fail_rate"], row["model"]),
+        )
+        for row in rows:
+            print(f"\nModel: {row['model']}")
+            print(f"  Build fail rate (attempt-level): {fmt_pct(row['build_fail_rate'])}")
+            print(f"  Problems where 0/k compiled:     {fmt_pct(row['build_fail_all_pct'])}")
+            print(f"  No-eval attempts (gen failure):  {fmt_pct(row['no_eval_rate'])}")
+
+            if row["top_build_error_codes"]:
+                print("\n  Top error codes (build failures only):")
+                code_w = max(len(code) for code, _ in row["top_build_error_codes"])
+                for code, count in row["top_build_error_codes"]:
+                    print(f"    {code.ljust(code_w)} : {count}")
+
+            if row["top_build_error_messages"]:
+                print("\n  Top error messages (normalized, build failures only):")
+                msg_w = min(max(len(m) for m, _ in row["top_build_error_messages"]), 60)
+                for msg, count in row["top_build_error_messages"]:
+                    display = msg[:60]
+                    print(f"    {display.ljust(msg_w)} : {count}")
 
 
 def print_per_problem(grouped: dict[tuple[str, str], dict[str, Any]]) -> None:
@@ -344,6 +450,10 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "avg_clippy_errors",
         "top_build_codes",
         "top_clippy_codes",
+        "build_fail_all_pct",
+        "no_eval_rate",
+        "top_build_error_codes",
+        "top_build_error_messages",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
@@ -362,6 +472,10 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                     "avg_clippy_errors": f"{row['avg_clippy_errors']:.6f}",
                     "top_build_codes": row["top_build_codes_str"],
                     "top_clippy_codes": row["top_clippy_codes_str"],
+                    "build_fail_all_pct": f"{row['build_fail_all_pct']:.6f}",
+                    "no_eval_rate": f"{row['no_eval_rate']:.6f}",
+                    "top_build_error_codes": row["top_build_error_codes_str"],
+                    "top_build_error_messages": row["top_build_error_messages_str"],
                 }
             )
 
@@ -388,6 +502,9 @@ def main() -> int:
 
     print_main_table(by_benchmark)
     print_top_codes(by_benchmark)
+
+    if args.compile_errors:
+        print_compile_error_analysis(by_benchmark)
 
     if args.per_problem:
         print_per_problem(grouped)
