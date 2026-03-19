@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures::stream::{self, StreamExt};
+use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -79,6 +80,23 @@ struct Cli {
     /// Save full attempt artifacts (prompts, raw model text, full eval stdout/stderr) in run_report.json
     #[arg(long, default_value_t = true)]
     save_artifacts: bool,
+
+    /// Prompt strategy mode for template handling.
+    #[arg(long, value_enum, default_value = "system-user")]
+    prompt_mode: PromptMode,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum PromptMode {
+    Raw,
+    SystemUser,
+    FewShot,
+}
+
+#[derive(Clone, Debug)]
+struct PromptTemplate {
+    system: Option<String>,
+    user: String,
 }
 
 #[derive(Serialize)]
@@ -233,7 +251,8 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(&cli.out_dir).context("create out_dir")?;
 
-    let template = fs::read_to_string(&cli.template).context("read template")?;
+    let template_raw = fs::read_to_string(&cli.template).context("read template")?;
+    let template = parse_prompt_template(&template_raw, cli.prompt_mode);
     let problems = load_problems(&cli.problems)?;
 
     let client = reqwest::Client::builder()
@@ -334,15 +353,26 @@ async fn warmup_eval_cache(client: &reqwest::Client, cli: &Cli) {
 async fn run_problem(
     client: &reqwest::Client,
     cli: &Cli,
-    template: &str,
+    template: &PromptTemplate,
     problem_id: &str,
     problem: &ProblemContents,
 ) -> Result<Vec<AttemptReport>> {
-    let prompt = template.replace("{{problem}}", &problem.prompt);
+    let user_prompt = template.user.replace("{{problem}}", &problem.prompt);
+    let system_prompt = template.system.clone();
     let mut attempts = Vec::with_capacity(cli.k);
 
     for attempt in 1..=cli.k {
-        match run_attempt(&client, &cli, &problem_id, attempt, &prompt, &problem.tests).await {
+        match run_attempt(
+            &client,
+            &cli,
+            &problem_id,
+            attempt,
+            system_prompt.as_deref(),
+            &user_prompt,
+            &problem.tests,
+        )
+        .await
+        {
             Ok(result) => attempts.push(result),
             Err(error) => eprintln!("attempt {attempt} failed for {problem_id}: {error}")
         }
@@ -357,13 +387,14 @@ async fn run_attempt(
     cli: &Cli,
     _problem_id: &str,
     attempt: usize,
-    prompt: &str,
+    system_prompt: Option<&str>,
+    user_prompt: &str,
     tests: &str,
 ) -> Result<AttemptReport> {
     let mut retries = 0;
     let mut out = AttemptReport {
         attempt,
-        prompt: cli.save_artifacts.then(|| prompt.to_string()),
+        prompt: cli.save_artifacts.then(|| user_prompt.to_string()),
         raw_model_text: None,
         generation_error: None,
         eval: None,
@@ -372,7 +403,7 @@ async fn run_attempt(
 
     let output = loop {
         // 1) Generate with OpenRouter
-        let raw_text = match openrouter_chat(client, cli, prompt).await {
+        let raw_text = match openrouter_chat(client, cli, system_prompt, user_prompt).await {
             Ok(t) => t,
             Err(e) => {
                 println!("{}", e);
@@ -387,16 +418,13 @@ async fn run_attempt(
             }
         };
 
-        // 2) strip common formatting issues
-        let stripped_a = raw_text.trim_ascii();
-        let stripped_b = stripped_a.strip_prefix("```rust\n").unwrap_or(stripped_a);
-        let stripped_c = stripped_b.strip_suffix("\n```").unwrap_or(stripped_b);
-
         if cli.save_artifacts {
-            out.raw_model_text = Some(stripped_c.to_string());
+            out.raw_model_text = Some(raw_text.clone());
         }
 
-        if stripped_c.is_empty() {
+        let extracted = extract_rust_code(&raw_text);
+
+        if extracted.is_none() {
             if retries > MAX_RETRIES {
                 out.eval_error = Some("empty model output".to_string());
                 return Ok(out);
@@ -406,7 +434,7 @@ async fn run_attempt(
                 continue;
             }
         } else {
-            break stripped_c.to_string();
+            break extracted.unwrap_or_default();
         }
     };
 
@@ -438,7 +466,123 @@ fn strip_step_io(step: &mut StepReport) {
     step.diagnostics.items.truncate(10);
 }
 
-async fn openrouter_chat(client: &reqwest::Client, cli: &Cli, prompt: &str) -> Result<String> {
+fn parse_prompt_template(template: &str, mode: PromptMode) -> PromptTemplate {
+    if matches!(mode, PromptMode::Raw) {
+        return PromptTemplate {
+            system: None,
+            user: template.to_string(),
+        };
+    }
+
+    if let Some((system, user)) = split_system_user_template(template) {
+        return PromptTemplate {
+            system: Some(system),
+            user,
+        };
+    }
+
+    PromptTemplate {
+        system: None,
+        user: template.to_string(),
+    }
+}
+
+fn split_system_user_template(template: &str) -> Option<(String, String)> {
+    const SYSTEM_TAG: &str = "---SYSTEM---";
+    const USER_TAG: &str = "---USER---";
+
+    let system_idx = template.find(SYSTEM_TAG)?;
+    let user_idx = template.find(USER_TAG)?;
+    if user_idx <= system_idx {
+        return None;
+    }
+
+    let system_start = system_idx + SYSTEM_TAG.len();
+    let user_start = user_idx + USER_TAG.len();
+    let system = template[system_start..user_idx].trim().to_string();
+    let user = template[user_start..].trim().to_string();
+    Some((system, user))
+}
+
+fn extract_rust_code(raw: &str) -> Option<String> {
+    let think_re = Regex::new(r"(?s)<think>.*?</think>").ok()?;
+    let reasoning_re = Regex::new(r"(?s)<reasoning>.*?</reasoning>").ok()?;
+    let fence_re = Regex::new(r"(?s)```(?:rust|rs|Rust|RS)?\s*\n(.*?)```").ok()?;
+
+    let without_think = think_re.replace_all(raw, "");
+    let cleaned = reasoning_re.replace_all(&without_think, "");
+
+    let blocks: Vec<String> = fence_re
+        .captures_iter(&cleaned)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().trim().to_string()))
+        .filter(|block| !block.is_empty())
+        .collect();
+
+    let candidate = if blocks.is_empty() {
+        strip_fallback_prose(cleaned.as_ref())
+    } else if blocks.len() == 1 {
+        blocks[0].clone()
+    } else {
+        blocks.join("\n\n")
+    };
+
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate.to_string())
+    }
+}
+
+fn strip_fallback_prose(raw: &str) -> String {
+    let sentence_re = Regex::new(r#"^[A-Za-z][A-Za-z0-9 ,.!?'"`:-]*$"#).ok();
+    let lines: Vec<&str> = raw.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut start = 0usize;
+    let mut end = lines.len();
+
+    while start < end && is_prose_or_wrapper_line(lines[start], sentence_re.as_ref()) {
+        start += 1;
+    }
+    while end > start && is_prose_or_wrapper_line(lines[end - 1], sentence_re.as_ref()) {
+        end -= 1;
+    }
+
+    lines[start..end].join("\n")
+}
+
+fn is_prose_or_wrapper_line(line: &str, sentence_re: Option<&Regex>) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    if trimmed.starts_with('#')
+        || trimmed.starts_with('>')
+        || trimmed.starts_with('*')
+        || trimmed.starts_with('-')
+        || trimmed.starts_with("```")
+    {
+        return true;
+    }
+
+    let has_rust_syntax = ['{', '}', '(', ')', ';'].iter().any(|c| trimmed.contains(*c));
+    if has_rust_syntax {
+        return false;
+    }
+
+    sentence_re.is_some_and(|re| re.is_match(trimmed))
+}
+
+async fn openrouter_chat(
+    client: &reqwest::Client,
+    cli: &Cli,
+    system_prompt: Option<&str>,
+    user_prompt: &str,
+) -> Result<String> {
     let url = format!("{}/chat/completions", cli.openrouter_base.trim_end_matches('/'));
 
     let mut headers = HeaderMap::new();
@@ -458,11 +602,15 @@ async fn openrouter_chat(client: &reqwest::Client, cli: &Cli, prompt: &str) -> R
     }
 
     // OpenRouter is OpenAI-compatible: messages + model + sampling params
+    let mut messages = Vec::new();
+    if let Some(system_prompt) = system_prompt {
+        messages.push(json!({ "role": "system", "content": system_prompt }));
+    }
+    messages.push(json!({ "role": "user", "content": user_prompt }));
+
     let body = json!({
         "model": cli.model,
-        "messages": [
-            { "role": "user", "content": prompt }
-        ],
+        "messages": messages,
         "temperature": cli.temperature,
         "max_tokens": cli.max_tokens
     });
