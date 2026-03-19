@@ -1,5 +1,4 @@
 use windows::core::Result;
-use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };

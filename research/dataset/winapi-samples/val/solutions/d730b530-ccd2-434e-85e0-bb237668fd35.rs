@@ -89,3 +89,9 @@ fn get_fips_approved_symmetric_algorithms() -> Result<Vec<String>> {
 
     Ok(result)
 }
+
+fn main() -> windows::core::Result<()> {
+    let fips_algorithms = get_fips_approved_symmetric_algorithms()?;
+    println!("FIPS-approved algorithms: {:?}", fips_algorithms);
+    Ok(())
+}

@@ -22,7 +22,7 @@ fn generate_ecdh_p256_keypair() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         fn drop(&mut self) {
             // SAFETY: Handle was successfully opened
             unsafe {
-                BCryptCloseAlgorithmProvider(self.0, 0);
+                let _ = BCryptCloseAlgorithmProvider(self.0, 0);
             }
         }
     }
@@ -41,7 +41,7 @@ fn generate_ecdh_p256_keypair() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         fn drop(&mut self) {
             // SAFETY: Handle was successfully created
             unsafe {
-                BCryptDestroyKey(self.0);
+                let _ = BCryptDestroyKey(self.0);
             }
         }
     }
@@ -179,4 +179,12 @@ fn generate_ecdh_p256_keypair() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let private_scalar = private_blob[scalar_start..scalar_start + private_key_size].to_vec();
 
     Ok((x, y, private_scalar))
+}
+
+fn main() -> Result<()> {
+    let (x, y, private) = generate_ecdh_p256_keypair()?;
+    println!("X: {:x?}", x);
+    println!("Y: {:x?}", y);
+    println!("Private: {:x?}", private);
+    Ok(())
 }

@@ -4,7 +4,7 @@ use windows::Win32::Globalization::{
     MultiByteToWideChar, WideCharToMultiByte, CP_UTF8, MB_ERR_INVALID_CHARS, WC_ERR_INVALID_CHARS,
 };
 
-fn to_wide_null(s: &str) -> Result<Vec<u16>> {
+pub fn to_wide_null(s: &str) -> Result<Vec<u16>> {
     if s.is_empty() {
         return Ok(vec![0]);
     }
@@ -42,7 +42,18 @@ fn to_wide_null(s: &str) -> Result<Vec<u16>> {
     Ok(wide_chars)
 }
 
-fn from_wide_ptr(ptr: *const u16) -> Result<String> {
+/// Converts a null-terminated UTF-16 string pointer to a Rust String.
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences a raw pointer. The caller must ensure that:
+/// - `ptr` is a valid pointer to a null-terminated UTF-16 string
+/// - The memory pointed to by `ptr` is valid for the entire duration of the call
+/// - The UTF-16 string is properly null-terminated
+/// - The pointer is properly aligned
+///
+/// If any of these conditions are violated, the behavior is undefined.
+pub unsafe fn from_wide_ptr(ptr: *const u16) -> Result<String> {
     if ptr.is_null() {
         return Err(Error::from_hresult(E_POINTER));
     }
@@ -86,4 +97,14 @@ fn from_wide_ptr(ptr: *const u16) -> Result<String> {
     // Convert to String, validating UTF-8
     String::from_utf8(utf8_bytes)
         .map_err(|_| Error::from_hresult(HRESULT::from_win32(ERROR_NO_UNICODE_TRANSLATION.0)))
+}
+
+fn main() -> Result<()> {
+    let wide = to_wide_null("hello")?;
+    println!("Wide: {:?}", wide);
+
+    let utf8 = unsafe { from_wide_ptr(wide.as_ptr()) }?;
+    println!("UTF-8: {}", utf8);
+
+    Ok(())
 }

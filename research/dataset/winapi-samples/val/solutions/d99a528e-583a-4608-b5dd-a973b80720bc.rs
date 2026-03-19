@@ -1,11 +1,8 @@
 use windows::{
     core::Result,
-    Win32::{
-        Foundation::HMODULE,
-        System::{
-            LibraryLoader::GetModuleHandleW,
-            Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE_READ},
-        },
+    Win32::System::{
+        LibraryLoader::GetModuleHandleW,
+        Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE_READ},
     },
 };
 

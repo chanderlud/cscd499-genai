@@ -1,7 +1,7 @@
-use windows::core::{Error, Result};
+use windows::core::Result;
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+    use std::{iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(once(0)).collect()
 }
 
@@ -10,7 +10,7 @@ fn from_wide_ptr(ptr: *const u16) -> String {
     use std::os::windows::ffi::OsStringExt;
     assert!(!ptr.is_null());
     let len = unsafe {
-        (0..std::isize::MAX)
+        (0..isize::MAX)
             .position(|i| *ptr.offset(i) == 0)
             .unwrap_or(0)
     };

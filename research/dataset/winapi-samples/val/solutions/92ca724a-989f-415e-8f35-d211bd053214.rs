@@ -68,3 +68,10 @@ fn hwnd_dpi(hwnd: HWND) -> Result<u32> {
     // All fallbacks failed
     Err(Error::from_hresult(E_FAIL))
 }
+
+fn main() -> Result<()> {
+    let hwnd = None;
+    let dpi = hwnd_dpi(hwnd)?;
+    println!("DPI: {}", dpi);
+    Ok(())
+}

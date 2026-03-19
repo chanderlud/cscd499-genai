@@ -1,5 +1,5 @@
-use windows::core::{Error, Result};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::core::Result;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, MapVirtualKeyExW, MAPVK_VSC_TO_VK_EX,
 };

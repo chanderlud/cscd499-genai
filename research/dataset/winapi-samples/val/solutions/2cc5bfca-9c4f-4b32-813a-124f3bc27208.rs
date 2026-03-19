@@ -1,5 +1,5 @@
 use std::mem::MaybeUninit;
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::STATUS_SUCCESS;
 use windows::Win32::Security::Cryptography::{
     BCryptCloseAlgorithmProvider, BCryptDestroyKey, BCryptEncrypt, BCryptGenerateSymmetricKey,
@@ -22,12 +22,7 @@ impl Drop for SymmetricKey {
     }
 }
 
-fn wide_null(s: &str) -> Vec<u16> {
-    use std::iter::once;
-    s.encode_utf16().chain(once(0)).collect()
-}
-
-fn aes_cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn aes_cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plaintext: &[u8]) -> Result<Vec<u8>> {
     // Open algorithm provider
     let mut alg_handle = BCRYPT_ALG_HANDLE::default();
     let status = unsafe {
@@ -49,12 +44,7 @@ fn aes_cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plaintext: &[u8]) -> Result<Ve
         BCryptSetProperty(
             BCRYPT_HANDLE(alg.0 .0),
             BCRYPT_CHAINING_MODE,
-            unsafe {
-                std::slice::from_raw_parts(
-                    chaining_mode.0 as *const u8,
-                    std::mem::size_of::<PCWSTR>(),
-                )
-            },
+            std::slice::from_raw_parts(chaining_mode.0 as *const u8, std::mem::size_of::<PCWSTR>()),
             0,
         )
     };
@@ -111,4 +101,15 @@ fn aes_cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plaintext: &[u8]) -> Result<Ve
     ciphertext.truncate(actual_len);
 
     Ok(ciphertext)
+}
+
+fn main() {
+    let key = [0u8; 16];
+    let iv = [0u8; 16];
+    let plaintext = b"Hello, World!";
+
+    match aes_cbc_encrypt(&key, &iv, plaintext) {
+        Ok(ciphertext) => println!("Encrypted: {:?}", ciphertext),
+        Err(e) => eprintln!("Encryption failed: {}", e),
+    }
 }

@@ -18,7 +18,7 @@ static mut CLASS_ATOM: u16 = 0;
 
 // Helper to convert OsStr to null-terminated UTF-16
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+    use std::{iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(once(0)).collect()
 }
 
@@ -104,7 +104,7 @@ pub fn create_toggle_overlay(class_name: &str, width: i32, height: i32) -> Resul
             height,
             None,
             None,
-            Some(HINSTANCE(unsafe { GetModuleHandleW(None).unwrap().0 })),
+            Some(HINSTANCE(GetModuleHandleW(None).unwrap().0)),
             Some(state_ptr as *const _),
         )
     }?;

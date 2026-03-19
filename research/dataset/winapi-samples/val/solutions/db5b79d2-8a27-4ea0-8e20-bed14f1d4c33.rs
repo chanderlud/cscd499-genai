@@ -98,7 +98,6 @@ const TRAY_ICON_MSG: u32 = WM_USER + 1;
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         TRAY_ICON_MSG => {
-            // Handle tray icon messages here
             println!("Tray icon interaction received");
             LRESULT(0)
         }
@@ -115,7 +114,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 }
 
 fn main() -> Result<()> {
-    // Register window class
     let class_name = wide_null("TrayIconExample".as_ref());
     let wnd_class = WNDCLASSW {
         lpfnWndProc: Some(wndproc),
@@ -130,7 +128,6 @@ fn main() -> Result<()> {
         return Err(Error::from_thread());
     }
 
-    // Create window
     let window_name = wide_null("Tray Icon Example".as_ref());
     // SAFETY: CreateWindowExW is a valid Windows API call with proper parameters
     let hwnd = unsafe {
@@ -154,14 +151,12 @@ fn main() -> Result<()> {
     // SAFETY: LoadIconW with null instance and IDI_APPLICATION is valid
     let icon = unsafe { LoadIconW(None, PCWSTR(32512 as *const u16)) }?;
 
-    // Create and configure notification icon
     let tray_icon = NotifyIcon::new()
         .window_handle(hwnd)
         .tip("My Application")
         .icon(icon)
         .callback_message(TRAY_ICON_MSG);
 
-    // Add icon to system tray
     tray_icon.notify_add()?;
 
     println!("Tray icon added. Check your system tray!");
@@ -172,12 +167,14 @@ fn main() -> Result<()> {
     unsafe {
         let mut msg = Default::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            TranslateMessage(&msg);
+            let translated = TranslateMessage(&msg);
+            if translated == FALSE {
+                return Err(Error::from_thread());
+            }
             DispatchMessageW(&msg);
         }
     }
 
-    // Clean up: remove tray icon
     tray_icon.notify_delete()?;
 
     Ok(())

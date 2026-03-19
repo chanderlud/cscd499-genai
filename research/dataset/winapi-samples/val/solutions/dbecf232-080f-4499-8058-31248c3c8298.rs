@@ -1,9 +1,7 @@
-#![allow(non_upper_case_globals)]
-
 use std::collections::HashMap;
 use std::ffi::CStr;
 
-use windows::core::{Error, Result, HRESULT};
+use windows::core::{Error, Result};
 use windows::Win32::Foundation::ERROR_INVALID_DATA;
 use windows::Win32::System::Diagnostics::Debug::{
     IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_NT_HEADERS32,
@@ -66,9 +64,7 @@ unsafe fn build_import_map() -> Result<HashMap<String, usize>> {
             let import_by_name_ptr: *const IMAGE_IMPORT_BY_NAME =
                 (module_addr as u32 + original_thunk) as _;
             let func_name_ptr = (*import_by_name_ptr).Name.as_ptr();
-            let func_name = CStr::from_ptr(func_name_ptr as *const i8)
-                .to_string_lossy()
-                .to_string();
+            let func_name = CStr::from_ptr(func_name_ptr).to_string_lossy().to_string();
 
             // Store IAT address for this function
             imports.insert(func_name, thunk_ptr as usize);

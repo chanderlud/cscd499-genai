@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
-use windows::core::{Error, Result, HRESULT, PCWSTR, PWSTR};
+use windows::core::{Error, Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
     ERROR_BAD_PATHNAME, ERROR_INVALID_DATA, ERROR_MORE_DATA, ERROR_SUCCESS,
 };
@@ -84,18 +84,14 @@ pub fn registry_path_to_shellitem_path(
 
     if status != ERROR_SUCCESS {
         // SAFETY: hkey_guard is a valid handle
-        unsafe {
-            RegCloseKey(hkey_guard);
-        }
+        let _ = unsafe { RegCloseKey(hkey_guard) };
         return Err(Error::from_hresult(HRESULT::from_win32(status.0)));
     }
 
     // Verify it's a REG_SZ value
     if data_type != REG_SZ {
         // SAFETY: hkey_guard is a valid handle
-        unsafe {
-            RegCloseKey(hkey_guard);
-        }
+        let _ = unsafe { RegCloseKey(hkey_guard) };
         return Err(Error::from_hresult(HRESULT::from_win32(
             ERROR_INVALID_DATA.0,
         )));
@@ -118,9 +114,7 @@ pub fn registry_path_to_shellitem_path(
     };
 
     // SAFETY: hkey_guard is a valid handle
-    unsafe {
-        RegCloseKey(hkey_guard);
-    }
+    let _ = unsafe { RegCloseKey(hkey_guard) };
 
     if status != ERROR_SUCCESS {
         return Err(Error::from_hresult(HRESULT::from_win32(status.0)));

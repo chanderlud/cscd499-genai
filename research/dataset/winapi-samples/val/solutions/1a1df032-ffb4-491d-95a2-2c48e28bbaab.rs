@@ -7,11 +7,6 @@ use windows::Win32::System::Diagnostics::Debug::{
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE_I386;
 use windows::Win32::System::SystemServices::{IMAGE_DOS_HEADER, IMAGE_EXPORT_DIRECTORY};
 
-fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{iter::once, os::windows::ffi::OsStrExt};
-    s.encode_wide().chain(once(0)).collect()
-}
-
 fn read_remote_memory<T: Copy>(handle: HANDLE, address: u32) -> Result<T> {
     let mut buffer = std::mem::MaybeUninit::<T>::uninit();
     let mut bytes_read = 0usize;

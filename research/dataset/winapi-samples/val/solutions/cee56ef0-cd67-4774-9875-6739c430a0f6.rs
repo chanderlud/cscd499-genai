@@ -48,9 +48,7 @@ pub fn create_named_mutex(name: &str) -> Result<(HANDLE, bool)> {
     let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide_buffer.as_ptr())) }?;
 
     // Check if the mutex already existed
-    // SAFETY: We just created a valid handle, and GetLastError is thread-safe
-    let already_exists =
-        unsafe { Error::from_thread().code() == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0) };
+    let already_exists = Error::from_thread().code() == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0);
 
     Ok((handle, !already_exists))
 }

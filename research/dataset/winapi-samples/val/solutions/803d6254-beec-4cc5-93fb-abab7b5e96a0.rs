@@ -45,8 +45,7 @@ pub fn create_named_event(name: &str) -> Result<(HANDLE, bool)> {
 
     // Check if the event already existed
     // Note: CreateEventW returns a valid handle even when ERROR_ALREADY_EXISTS is set
-    let already_exists =
-        unsafe { Error::from_thread().code() } == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0);
+    let already_exists = Error::from_thread().code() == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0);
 
     Ok((handle, !already_exists))
 }

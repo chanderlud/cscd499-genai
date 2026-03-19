@@ -47,3 +47,10 @@ fn set_progress_bar_fraction(hwnd: HWND, numerator: u64, denominator: u64) -> Re
 
     Ok(())
 }
+
+fn main() -> Result<()> {
+    // Create a dummy window handle (replace with actual window in real app)
+    let hwnd = HWND(std::ptr::null_mut());
+    set_progress_bar_fraction(hwnd, 25, 100)?;
+    Ok(())
+}

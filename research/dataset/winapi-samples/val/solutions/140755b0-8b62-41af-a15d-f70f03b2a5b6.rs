@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::{NTSTATUS, STATUS_SUCCESS};
 use windows::Win32::Security::Cryptography::{
     BCryptDeriveKey, BCryptDestroyKey, BCryptDestroySecret, BCryptExportKey, BCryptFinalizeKeyPair,
@@ -6,7 +6,7 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_ECCPUBLIC_BLOB, BCRYPT_KDF_RAW_SECRET, BCRYPT_KEY_HANDLE, BCRYPT_SECRET_HANDLE,
 };
 
-fn perform_ecdh_key_agreement(
+pub fn perform_ecdh_key_agreement(
     alg_handle: BCRYPT_ALG_HANDLE,
     peer_public_key_blob: &[u8],
 ) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -114,4 +114,14 @@ fn perform_ecdh_key_agreement(
     }
 
     Ok((public_blob, shared_secret))
+}
+
+fn main() -> Result<()> {
+    // Example usage - this would need actual values in a real application
+    let alg_handle = BCRYPT_ALG_HANDLE::default();
+    let peer_public_key = vec![0u8; 32]; // Example placeholder
+    let (public_blob, shared_secret) = perform_ecdh_key_agreement(alg_handle, &peer_public_key)?;
+    println!("Public blob: {:?}", public_blob);
+    println!("Shared secret: {:?}", shared_secret);
+    Ok(())
 }

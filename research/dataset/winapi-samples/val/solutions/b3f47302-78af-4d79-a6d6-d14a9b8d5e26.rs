@@ -1,6 +1,3 @@
-use windows::core::{Error, Result, HRESULT};
-use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, WIN32_ERROR};
-
 pub fn find_matching_error_pair(
     win_errors: &[windows::core::Error],
     io_errors: &[std::io::Error],

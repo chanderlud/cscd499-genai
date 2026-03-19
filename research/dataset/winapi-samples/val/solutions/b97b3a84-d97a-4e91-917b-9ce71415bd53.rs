@@ -1,4 +1,4 @@
-use windows::core::{Error, HRESULT};
+use windows::core::Error;
 
 pub fn same_os_error(win: &Error, io: &std::io::Error) -> bool {
     let hr_win = win.code();

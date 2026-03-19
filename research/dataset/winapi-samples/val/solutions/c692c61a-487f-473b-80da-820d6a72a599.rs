@@ -111,3 +111,16 @@ fn pbkdf2_derive(
     derived_key.truncate(result_length as usize);
     Ok(derived_key)
 }
+
+fn main() {
+    let password = b"password";
+    let salt = Some(b"salt".as_ref());
+    let iterations = 1000;
+    let hash_algorithm_id = b"SHA256";
+    let key_length = 32;
+
+    match pbkdf2_derive(password, salt, iterations, hash_algorithm_id, key_length) {
+        Ok(derived_key) => println!("Derived key: {:?}", derived_key),
+        Err(e) => println!("Error: {:?}", e),
+    }
+}

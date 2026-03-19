@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, HRESULT};
+use windows::core::{Error, Result};
 use windows::Win32::Foundation::{LocalFree, E_INVALIDARG, HLOCAL};
 use windows::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,

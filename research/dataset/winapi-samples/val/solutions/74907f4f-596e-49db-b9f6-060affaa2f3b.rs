@@ -53,7 +53,9 @@ pub unsafe fn delay_load_wide<T>(library: PCWSTR, function: PCWSTR) -> Option<T>
         None => {
             // Conversion failed, free library and return None
             // SAFETY: hmodule is valid from LoadLibraryExW
-            unsafe { FreeLibrary(hmodule) };
+            unsafe {
+                FreeLibrary(hmodule).ok();
+            }
             return None;
         }
     };
@@ -71,7 +73,9 @@ pub unsafe fn delay_load_wide<T>(library: PCWSTR, function: PCWSTR) -> Option<T>
         None => {
             // Function not found, free library and return None
             // SAFETY: hmodule is valid from LoadLibraryExW
-            unsafe { FreeLibrary(hmodule) };
+            unsafe {
+                FreeLibrary(hmodule).ok();
+            }
             None
         }
     }

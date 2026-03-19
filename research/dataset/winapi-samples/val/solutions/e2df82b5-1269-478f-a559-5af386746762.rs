@@ -4,7 +4,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
 use windows::core::{Error, Result, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, MAX_PATH};
+use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, GetTempFileNameW, MoveFileExW, ReplaceFileW, WriteFile,
     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_WRITE,
@@ -21,14 +21,11 @@ fn get_directory(path: &Path) -> Result<Vec<u16>> {
 }
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    // Get directory for temporary file
     let dir_wide = get_directory(path)?;
 
-    // Create temporary file name in same directory
-    let mut temp_path = [0u16; 260]; // GetTempFileNameW expects exactly 260 u16s
+    let mut temp_path = [0u16; 260];
     let prefix = wide_null(OsStr::new("tmp"));
 
-    // SAFETY: GetTempFileNameW writes to temp_path buffer, which is large enough
     let result = unsafe {
         GetTempFileNameW(
             PCWSTR(dir_wide.as_ptr()),
@@ -42,8 +39,6 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         return Err(Error::from_thread());
     }
 
-    // Create temporary file for writing
-    // SAFETY: CreateFileW returns a handle that must be closed
     let temp_handle = unsafe {
         CreateFileW(
             PCWSTR(temp_path.as_ptr()),
@@ -56,9 +51,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         )
     }?;
 
-    // Write data to temporary file
     let mut bytes_written = 0u32;
-    // SAFETY: WriteFile writes data from buffer to file handle
     let write_result = unsafe {
         WriteFile(
             temp_handle,
@@ -76,8 +69,6 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         return Err(err);
     }
 
-    // Flush file buffers to ensure data is persisted
-    // SAFETY: FlushFileBuffers ensures all buffered writes are flushed
     let flush_result = unsafe { FlushFileBuffers(temp_handle) };
     if flush_result.is_err() {
         let err = Error::from_thread();
@@ -87,15 +78,10 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         return Err(err);
     }
 
-    // Close temporary file handle
-    // SAFETY: CloseHandle closes the file handle
     unsafe { CloseHandle(temp_handle) }?;
 
-    // Convert destination path to wide string
     let dest_wide = wide_null(path.as_os_str());
 
-    // Try atomic replace with ReplaceFileW first
-    // SAFETY: ReplaceFileW atomically replaces destination with temporary file
     let replace_result = unsafe {
         ReplaceFileW(
             PCWSTR(dest_wide.as_ptr()),
@@ -111,11 +97,8 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         return Ok(());
     }
 
-    // If ReplaceFileW fails, check if it's because destination doesn't exist
     let err = Error::from_thread();
     if err.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) {
-        // Destination doesn't exist, use MoveFileExW as fallback
-        // SAFETY: MoveFileExW moves temporary file to destination
         let move_result = unsafe {
             MoveFileExW(
                 PCWSTR(temp_path.as_ptr()),

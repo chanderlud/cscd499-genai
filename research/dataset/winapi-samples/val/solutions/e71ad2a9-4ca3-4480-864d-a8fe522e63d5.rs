@@ -77,10 +77,8 @@ pub fn wait_for_create(dir: &[u16], timeout_ms: u32) -> Result<Option<([u16; 260
                     let name_len = (notify.FileNameLength as usize) / 2; // Convert bytes to u16 count
                     let copy_len = name_len.min(259); // Leave room for null terminator
 
-                    // Copy filename from notification structure
-                    for i in 0..copy_len {
-                        filename[i] = notify.FileName[i];
-                    }
+                    // Copy filename from notification structure using slice copy
+                    filename[..copy_len].copy_from_slice(&notify.FileName[..copy_len]);
                     filename[copy_len] = 0; // Null terminate
 
                     return Ok(Some((filename, copy_len)));

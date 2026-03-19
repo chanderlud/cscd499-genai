@@ -1,8 +1,6 @@
-// TITLE: Adjust window rectangle for non-client area with DPI awareness
-
 use std::sync::OnceLock;
 use windows::{
-    core::{Error, Result, PCWSTR},
+    core::{Result, PCWSTR},
     Win32::{
         Foundation::{HWND, RECT},
         UI::WindowsAndMessaging::{
@@ -19,10 +17,7 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
 }
 
 // Helper function to dynamically load function pointer
-fn get_function_impl(
-    library: &str,
-    function: &str,
-) -> Option<unsafe extern "system" fn() -> isize> {
+fn get_function_impl(library: &str, function: &str) -> Option<AdjustWindowRectExForDpi> {
     use windows::core::PCSTR;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
@@ -40,9 +35,9 @@ fn get_function_impl(
 // Type for AdjustWindowRectExForDpi function
 type AdjustWindowRectExForDpi = unsafe extern "system" fn(
     rect: *mut RECT,
-    dwStyle: WINDOW_STYLE,
-    bMenu: bool,
-    dwExStyle: WINDOW_EX_STYLE,
+    dw_style: WINDOW_STYLE,
+    b_menu: bool,
+    dw_ex_style: WINDOW_EX_STYLE,
     dpi: u32,
 ) -> i32;
 
@@ -52,7 +47,6 @@ static ADJUST_WINDOW_RECT_EX_FOR_DPI: OnceLock<Option<AdjustWindowRectExForDpi>>
 // Initialize the function pointer
 fn init_adjust_window_rect_ex_for_dpi() -> Option<AdjustWindowRectExForDpi> {
     get_function_impl("user32.dll", "AdjustWindowRectExForDpi\0")
-        .map(|f| unsafe { std::mem::transmute(f) })
 }
 
 // Adjust window rectangle considering DPI scaling

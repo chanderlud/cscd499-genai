@@ -9,30 +9,30 @@ fn wide_null(s: &str) -> Vec<u16> {
 
 // Define the PDH types and functions manually since the feature isn't enabled
 // These are the actual Win32 API signatures
-type PDH_HQUERY = isize;
-type PDH_HCOUNTER = isize;
+type PdhHquery = isize;
+type PdhHcounter = isize;
 
 #[link(name = "pdh")]
 extern "system" {
-    fn PdhOpenQueryW(szdatasource: PCWSTR, dwuserdata: usize, phquery: *mut PDH_HQUERY) -> u32;
+    fn PdhOpenQueryW(szdatasource: PCWSTR, dwuserdata: usize, phquery: *mut PdhHquery) -> u32;
 
     fn PdhAddCounterW(
-        hquery: PDH_HQUERY,
+        hquery: PdhHquery,
         szfullcounterpath: PCWSTR,
         dwuserdata: usize,
-        phcounter: *mut PDH_HCOUNTER,
+        phcounter: *mut PdhHcounter,
     ) -> u32;
 
-    fn PdhCollectQueryData(hquery: PDH_HQUERY) -> u32;
+    fn PdhCollectQueryData(hquery: PdhHquery) -> u32;
 
     fn PdhGetFormattedCounterValue(
-        hcounter: PDH_HCOUNTER,
+        hcounter: PdhHcounter,
         dwformat: u32,
-        lpdwtype: Option<*mut u32>,
+        lpdwtype: *mut u32,
         pvalue: *mut PDH_FMT_COUNTERVALUE,
     ) -> u32;
 
-    fn PdhCloseQuery(hquery: PDH_HQUERY) -> u32;
+    fn PdhCloseQuery(hquery: PdhHquery) -> u32;
 }
 
 const PDH_FMT_DOUBLE: u32 = 0x00000200;
@@ -54,14 +54,14 @@ union PDH_FMT_COUNTERVALUE_0 {
 }
 
 struct ProcessorTimeIterator {
-    query: PDH_HQUERY,
-    counter: PDH_HCOUNTER,
+    query: PdhHquery,
+    counter: PdhHcounter,
 }
 
 impl ProcessorTimeIterator {
     fn new() -> Result<Self> {
-        let mut query: PDH_HQUERY = 0;
-        let mut counter: PDH_HCOUNTER = 0;
+        let mut query: PdhHquery = 0;
+        let mut counter: PdhHcounter = 0;
 
         // Open PDH query
         let status = unsafe { PdhOpenQueryW(PCWSTR::null(), 0, &mut query) };
@@ -103,7 +103,7 @@ impl Iterator for ProcessorTimeIterator {
         };
         let mut type_ = 0u32;
         let status = unsafe {
-            PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, Some(&mut type_), &mut value)
+            PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, &mut type_, &mut value)
         };
         if status != 0 {
             return Some(Err(Error::from_hresult(HRESULT::from_win32(status))));
@@ -123,4 +123,16 @@ impl Drop for ProcessorTimeIterator {
 
 fn processor_time_iter() -> Result<impl Iterator<Item = Result<f64>>> {
     ProcessorTimeIterator::new()
+}
+
+fn main() -> Result<()> {
+    let mut iter = processor_time_iter()?;
+    for _ in 0..5 {
+        match iter.next() {
+            Some(Ok(value)) => println!("CPU usage: {:.2}%", value),
+            Some(Err(e)) => eprintln!("Error: {}", e),
+            None => break,
+        }
+    }
+    Ok(())
 }

@@ -6,8 +6,8 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList, TBPF_NORMAL};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-    RegisterClassExW, TranslateMessage, CW_USEDEFAULT, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_DESTROY, WNDCLASSEXW,
+    RegisterClassExW, ShowWindow, TranslateMessage, CW_USEDEFAULT, MSG, SW_SHOW, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_DESTROY, WNDCLASSEXW,
 };
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -57,12 +57,11 @@ fn main() -> Result<()> {
 
     // Show window and run message loop
     unsafe {
-        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
-        ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
-            TranslateMessage(&message);
+            let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }

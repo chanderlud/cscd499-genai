@@ -111,7 +111,6 @@ impl NotifyIcon {
     }
 }
 
-const MY_ICON_UID: u32 = 1;
 const MY_CALLBACK_MSG: u32 = WM_USER + 1;
 
 // SAFETY: Window procedure callback - must be unsafe due to Windows API requirements
@@ -189,8 +188,8 @@ fn main() -> Result<()> {
     let mut msg = MSG::default();
     // SAFETY: GetMessageW is a valid Windows API call with proper parameters
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.into() {
+        let _ = unsafe { TranslateMessage(&msg) };
         unsafe {
-            TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
