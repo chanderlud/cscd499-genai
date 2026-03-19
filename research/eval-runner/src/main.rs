@@ -34,13 +34,13 @@ struct Cli {
     #[arg(long, default_value_t = 3)]
     k: usize,
 
-    /// OpenRouter model id (e.g. "openai/gpt-4.1-mini", "anthropic/claude-3.5-sonnet")
+    /// Model ID/name (e.g. Ollama: "qwen3.5:9b", OpenRouter: "openai/gpt-4.1-mini")
     #[arg(long, default_value = "qwen2.5-coder:latest")]
     model: String,
 
-    /// OpenRouter API key (or set OPENROUTER_API_KEY)
+    /// OpenRouter API key (or set OPENROUTER_API_KEY); required only for OpenRouter backend
     #[arg(long, env = "OPENROUTER_API_KEY")]
-    openrouter_key: String,
+    openrouter_key: Option<String>,
 
     /// Optional attribution: set OPENROUTER_HTTP_REFERER
     #[arg(long, env = "OPENROUTER_HTTP_REFERER")]
@@ -50,9 +50,13 @@ struct Cli {
     #[arg(long, env = "OPENROUTER_X_TITLE")]
     openrouter_x_title: Option<String>,
 
-    /// OpenRouter base URL
+    /// Base URL for OpenRouter or Ollama OpenAI-compatible endpoint
     #[arg(long, default_value = "http://localhost:11434/v1")]
     openrouter_base: String,
+
+    /// Backend override; if unset, auto-detected from --openrouter-base
+    #[arg(long, value_enum)]
+    backend: Option<BackendArg>,
 
     /// Evaluation API base URL (your service)
     #[arg(long, default_value = "http://localhost:3002")]
@@ -65,6 +69,22 @@ struct Cli {
     /// Temperature for generation
     #[arg(long, default_value_t = 0.2)]
     temperature: f32,
+
+    /// Top-p sampling
+    #[arg(long)]
+    top_p: Option<f32>,
+
+    /// Top-k sampling
+    #[arg(long)]
+    top_k: Option<u32>,
+
+    /// Max generated tokens for Ollama native API
+    #[arg(long)]
+    num_predict: Option<u32>,
+
+    /// Enable reasoning/thinking mode for Ollama models that support it
+    #[arg(long, default_value_t = false)]
+    thinking: bool,
 
     /// Max tokens for generation
     #[arg(long, default_value_t = 16000)]
@@ -94,6 +114,18 @@ enum PromptMode {
     FewShot,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum BackendArg {
+    Ollama,
+    OpenRouter,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Backend {
+    Ollama,
+    OpenRouter,
+}
+
 #[derive(Clone, Debug)]
 struct PromptTemplate {
     system: Option<String>,
@@ -110,6 +142,7 @@ struct RunReport {
 struct RunMeta {
     started_unix_ms: u128,
     model: String,
+    backend: String,
     k: usize,
     eval_base: String,
     openrouter_base: String,
@@ -228,6 +261,20 @@ struct OrUsage {
     total_tokens: Option<u32>,
 }
 
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    model: String,
+    message: OllamaMessage,
+    done: bool,
+    done_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
 #[derive(Serialize)]
 struct ProblemStats {
     attempts: usize,
@@ -251,6 +298,7 @@ struct ProblemContents {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let detected_backend = detect_backend_for_cli(&cli);
 
     fs::create_dir_all(&cli.out_dir).context("create out_dir")?;
 
@@ -305,6 +353,10 @@ async fn main() -> Result<()> {
         meta: RunMeta {
             started_unix_ms,
             model: cli.model.clone(),
+            backend: match detected_backend {
+                Backend::Ollama => "ollama".to_string(),
+                Backend::OpenRouter => "openrouter".to_string(),
+            },
             k: cli.k,
             eval_base: cli.eval_base.clone(),
             openrouter_base: cli.openrouter_base.clone(),
@@ -394,6 +446,7 @@ async fn run_attempt(
     user_prompt: &str,
     tests: &str,
 ) -> Result<AttemptReport> {
+    let backend = detect_backend_for_cli(cli);
     let mut api_retries = 0usize;
     let mut empty_retries = 0usize;
     let mut last_finish_reason: Option<String> = None;
@@ -413,7 +466,7 @@ async fn run_attempt(
     };
 
     let output = loop {
-        // 1) Generate with OpenRouter
+        // 1) Generate with selected backend
         let request_prompt = format!("{user_prompt}{prompt_suffix}");
         let temp_override = Some((cli.temperature + (empty_retries as f32 * 0.05)).min(1.0));
         let max_tokens_override = if length_retry_boost_pending && !used_length_retry_boost {
@@ -424,16 +477,32 @@ async fn run_attempt(
             None
         };
 
-        let (raw_text, finish_reason) = match openrouter_chat(
-            client,
-            cli,
-            system_prompt,
-            &request_prompt,
-            temp_override,
-            max_tokens_override,
-        )
-        .await
-        {
+        let chat_result = match backend {
+            Backend::Ollama => {
+                ollama_chat(
+                    client,
+                    cli,
+                    system_prompt,
+                    &request_prompt,
+                    temp_override,
+                    max_tokens_override,
+                )
+                .await
+            }
+            Backend::OpenRouter => {
+                openrouter_chat(
+                    client,
+                    cli,
+                    system_prompt,
+                    &request_prompt,
+                    temp_override,
+                    max_tokens_override,
+                )
+                .await
+            }
+        };
+
+        let (raw_text, finish_reason) = match chat_result {
             Ok(result) => result,
             Err(e) => {
                 println!("{}", e);
@@ -450,12 +519,18 @@ async fn run_attempt(
             }
         };
 
+        let cleaned_text = if matches!(backend, Backend::Ollama) {
+            strip_think_blocks(&raw_text)
+        } else {
+            raw_text.clone()
+        };
+
         last_finish_reason = finish_reason.clone();
         if cli.save_artifacts {
-            out.raw_model_text = Some(raw_text.clone());
+            out.raw_model_text = Some(cleaned_text.clone());
         }
 
-        let extracted = extract_rust_code(&raw_text);
+        let extracted = extract_rust_code(&cleaned_text);
 
         if extracted.is_none() {
             if finish_reason.as_deref() == Some("content_filter") {
@@ -637,6 +712,39 @@ fn is_prose_or_wrapper_line(line: &str, sentence_re: Option<&Regex>) -> bool {
     sentence_re.is_some_and(|re| re.is_match(trimmed))
 }
 
+fn strip_think_blocks(raw: &str) -> String {
+    match Regex::new(r"(?s)<think>.*?</think>") {
+        Ok(think_re) => think_re.replace_all(raw, "").to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn is_qwen35(model: &str) -> bool {
+    let lowered = model.to_lowercase();
+    lowered.contains("qwen3.5") || lowered.contains("qwen3-5")
+}
+
+fn detect_backend(base_url: &str) -> Backend {
+    let lowered = base_url.to_lowercase();
+    if (lowered.contains("localhost") || lowered.contains("127.0.0.1"))
+        && !lowered.contains("openrouter.ai")
+    {
+        Backend::Ollama
+    } else {
+        Backend::OpenRouter
+    }
+}
+
+fn detect_backend_for_cli(cli: &Cli) -> Backend {
+    if let Some(override_backend) = cli.backend {
+        return match override_backend {
+            BackendArg::Ollama => Backend::Ollama,
+            BackendArg::OpenRouter => Backend::OpenRouter,
+        };
+    }
+    detect_backend(&cli.openrouter_base)
+}
+
 async fn openrouter_chat(
     client: &reqwest::Client,
     cli: &Cli,
@@ -648,11 +756,13 @@ async fn openrouter_chat(
     let url = format!("{}/chat/completions", cli.openrouter_base.trim_end_matches('/'));
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", cli.openrouter_key))
-            .context("bad OPENROUTER_API_KEY")?,
-    );
+    if let Some(openrouter_key) = &cli.openrouter_key {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", openrouter_key))
+                .context("bad OPENROUTER_API_KEY")?,
+        );
+    }
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     // Optional attribution headers. OpenRouter documents these as optional
@@ -719,6 +829,100 @@ async fn openrouter_chat(
     }
 
     Ok((content, finish_reason))
+}
+
+async fn ollama_chat(
+    client: &reqwest::Client,
+    cli: &Cli,
+    system_prompt: Option<&str>,
+    user_prompt: &str,
+    temperature_override: Option<f32>,
+    max_tokens_override: Option<u32>,
+) -> Result<(String, Option<String>)> {
+    let base = cli.openrouter_base.trim_end_matches('/');
+    let base = base.strip_suffix("/v1").unwrap_or(base);
+    let url = format!("{base}/api/chat");
+
+    let mut messages = Vec::new();
+    if let Some(system_prompt) = system_prompt {
+        messages.push(json!({ "role": "system", "content": system_prompt }));
+    }
+    messages.push(json!({ "role": "user", "content": user_prompt }));
+
+    let qwen35 = is_qwen35(&cli.model);
+    let temperature = if qwen35 {
+        let base_temperature = if (cli.temperature - 0.2).abs() < f32::EPSILON {
+            0.4
+        } else {
+            cli.temperature
+        };
+        let retry_delta = temperature_override
+            .map(|t| (t - cli.temperature).max(0.0))
+            .unwrap_or(0.0);
+        base_temperature + retry_delta
+    } else {
+        temperature_override.unwrap_or(cli.temperature)
+    };
+    let top_p = if qwen35 {
+        cli.top_p.unwrap_or(0.8)
+    } else {
+        cli.top_p.unwrap_or(1.0)
+    };
+    let top_k = if qwen35 {
+        cli.top_k.unwrap_or(20)
+    } else {
+        cli.top_k.unwrap_or(40)
+    };
+    let num_predict = if qwen35 {
+        cli.num_predict
+            .unwrap_or_else(|| max_tokens_override.unwrap_or(4096))
+            .min(4096)
+    } else {
+        cli.num_predict
+            .unwrap_or_else(|| max_tokens_override.unwrap_or(cli.max_tokens))
+    };
+
+    let body = json!({
+        "model": cli.model,
+        "messages": messages,
+        "think": cli.thinking,
+        "stream": false,
+        "options": {
+            "num_predict": num_predict,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k
+        }
+    });
+
+    let resp = client
+        .post(url)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await
+        .context("Ollama request failed")?;
+
+    let status = resp.status();
+    let text = resp.text().await.context("read Ollama response")?;
+    if !status.is_success() {
+        return Err(anyhow!("Ollama HTTP {}: {}", status, text));
+    }
+
+    let parsed: OllamaChatResponse = serde_json::from_str(&text).context("parse Ollama JSON")?;
+    if parsed.message.content.is_empty() {
+        eprintln!(
+            "Ollama empty content; model={}; role={}; done={}; done_reason={:?}; raw={}",
+            parsed.model, parsed.message.role, parsed.done, parsed.done_reason, text
+        );
+    }
+
+    let finish_reason = parsed.done_reason.clone().map(|reason| match reason.as_str() {
+        "stop" => "stop".to_string(),
+        "length" => "length".to_string(),
+        _ => reason,
+    });
+    Ok((parsed.message.content, finish_reason))
 }
 
 async fn eval_code(client: &reqwest::Client, cli: &Cli, gen: &str) -> Result<EvaluateResponse> {
