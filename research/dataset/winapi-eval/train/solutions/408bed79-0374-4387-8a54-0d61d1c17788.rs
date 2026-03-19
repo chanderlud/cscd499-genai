@@ -1,14 +1,14 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::Path;
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::{Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     FindClose, FindFirstFileW, FindNextFileW, WIN32_FIND_DATAW,
 };
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-    use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+    use std::{iter::once, os::windows::ffi::OsStrExt};
     s.encode_wide().chain(once(0)).collect()
 }
 

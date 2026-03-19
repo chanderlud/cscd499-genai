@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW, HKEY_CURRENT_USER, KEY_READ,
@@ -40,7 +40,7 @@ pub fn reg_set_get_hkcu(path: &str, name: &str, value: &str) -> Result<String> {
     let result =
         unsafe { RegSetValueExW(hkey, PCWSTR(name_w.as_ptr()), Some(0), REG_SZ, Some(data)) };
     if result != ERROR_SUCCESS {
-        unsafe { RegCloseKey(hkey) };
+        let _ = unsafe { RegCloseKey(hkey) };
         return Err(Error::from_hresult(result.to_hresult()));
     }
 
@@ -58,7 +58,7 @@ pub fn reg_set_get_hkcu(path: &str, name: &str, value: &str) -> Result<String> {
         )
     };
     if result != ERROR_SUCCESS {
-        unsafe { RegCloseKey(hkey) };
+        let _ = unsafe { RegCloseKey(hkey) };
         return Err(Error::from_hresult(result.to_hresult()));
     }
 
@@ -74,7 +74,7 @@ pub fn reg_set_get_hkcu(path: &str, name: &str, value: &str) -> Result<String> {
             Some(&mut buffer_size),
         )
     };
-    unsafe { RegCloseKey(hkey) };
+    let _ = unsafe { RegCloseKey(hkey) };
     if result != ERROR_SUCCESS {
         return Err(Error::from_hresult(result.to_hresult()));
     }
