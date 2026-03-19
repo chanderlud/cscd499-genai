@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-critique-fraction",
         type=float,
-        default=0.07,
+        default=0.05,
         help="Maximum fraction of final dataset that may be 'critique' type (default 0.07).",
     )
     parser.add_argument(

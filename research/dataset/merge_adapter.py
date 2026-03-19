@@ -2,9 +2,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 import torch
 
-base_model = "Qwen/Qwen2.5-Coder-7B-Instruct"
-adapter_dir = r"outputs/qwen25-coder-rust-7b-qlora/checkpoint-240"
-merged_dir = r"merged_qwen25_coder_rust_7b"
+base_model = "Qwen/Qwen3.5-9B-Base"
+adapter_dir = r"outputs/qwen35-rust-winapi-qlora"
+merged_dir = r"merged_qwen35_coder_rust_9b"
 
 tokenizer = AutoTokenizer.from_pretrained(base_model)
 

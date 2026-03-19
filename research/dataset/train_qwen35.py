@@ -1,9 +1,18 @@
-
 #!/usr/bin/env python
 """
-QLoRA SFT training script for Qwen2.5-Coder on Rust problem/solution data.
+QLoRA / LoRA SFT training script for Qwen3.5-9B on Rust problem/solution data.
 
-Supported input formats (JSONL or JSON):
+Key changes vs the original Qwen2.5 script:
+- Defaults updated for Qwen3.5.
+- Pre-renders conversational prompt/completion rows into plain string prompt/completion
+  pairs using the tokenizer chat template. This avoids recent TRL prompt-completion
+  mismatches reported for Qwen3.5 conversational datasets.
+- Supports Qwen chat_template kwargs (for example enable_thinking=False).
+- Fixes warmup handling so values < 1.0 are treated as warmup_ratio and values >= 1
+  are treated as absolute warmup_steps.
+- Infers the chat EOS token instead of hardcoding assumptions everywhere.
+
+Supported input formats (JSONL or JSON)
 1) Conversational prompt-completion:
    {
      "prompt": [{"role": "system", "content": "..."},
@@ -22,19 +31,6 @@ Supported input formats (JSONL or JSON):
      "problem": "Write a Rust function that ...",
      "solution": "fn main() { ... }"
    }
-
-Example:
-    accelerate launch train.py ^
-      --train-file data/train.jsonl ^
-      --eval-file data/valid.jsonl ^
-      --output-dir outputs/qwen25-coder-rust-7b-qlora ^
-      --model-name Qwen/Qwen2.5-Coder-7B-Instruct ^
-      --max-length 2048 ^
-      --per-device-train-batch-size 1 ^
-      --gradient-accumulation-steps 16 ^
-      --learning-rate 1e-4 ^
-      --num-train-epochs 3 ^
-      --use-4bit
 """
 
 from __future__ import annotations
@@ -45,27 +41,25 @@ import math
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import transformers
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    set_seed,
-)
-
+from packaging import version
 from peft import LoraConfig, prepare_model_for_kbit_training
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, set_seed
 from trl import SFTConfig, SFTTrainer
 
 FIM_PREFIX_TOKEN = "<|fim_prefix|>"
 FIM_SUFFIX_TOKEN = "<|fim_suffix|>"
 FIM_MIDDLE_TOKEN = "<|fim_middle|>"
+DEFAULT_QWEN35_MODEL = "Qwen/Qwen3.5-9B"
+DEFAULT_QWEN35_BASE_MODEL = "Qwen/Qwen3.5-9B-Base"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train Qwen2.5-Coder with QLoRA SFT on Rust problem/solution data.")
+    parser = argparse.ArgumentParser(description="Train Qwen3.5 with QLoRA / LoRA SFT on Rust problem/solution data.")
 
     # Data
     parser.add_argument("--train-file", type=str, required=True, help="Path to training JSON/JSONL file.")
@@ -88,12 +82,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--shuffle-train",
         action="store_true",
-        help="Shuffle training rows before training. The trainer also shuffles by default when sampling batches.",
+        help="Shuffle training rows before training. The trainer also shuffles batches by default.",
     )
     parser.add_argument(
         "--fim-augmentation-ratio",
         type=float,
-        default=0.075,
+        default=0.05,
         help=(
             "Fraction of training examples to duplicate as FIM variants. "
             "Recommended range: 0.05-0.10. Set to 0.0 to disable FIM augmentation."
@@ -101,7 +95,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Model
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen2.5-Coder-7B-Instruct")
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=DEFAULT_QWEN35_MODEL,
+        help=(
+            f"Model ID to fine-tune. Default is {DEFAULT_QWEN35_MODEL!r} to match the stronger checkpoint "
+            f"you benchmarked. If you want the cleaner fine-tuning starting point, use {DEFAULT_QWEN35_BASE_MODEL!r}."
+        ),
+    )
     parser.add_argument("--attn-implementation", type=str, default="sdpa", choices=["sdpa", "eager", "flash_attention_2"])
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--use-4bit", action="store_true", help="Enable QLoRA 4-bit loading with bitsandbytes.")
@@ -111,6 +113,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false")
     parser.set_defaults(gradient_checkpointing=True)
+
+    # Chat template / Qwen3.5 behavior
+    parser.add_argument(
+        "--chat-template-kwargs-json",
+        type=str,
+        default=None,
+        help='Optional JSON dict passed to tokenizer.apply_chat_template, e.g. "{\"enable_thinking\": false}".',
+    )
+    parser.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        help=(
+            "Enable Qwen thinking mode when rendering prompt strings. "
+            "By default this script renders post-trained Qwen3/Qwen3.5 models in non-thinking mode."
+        ),
+    )
+    parser.add_argument(
+        "--chat-eos-token",
+        type=str,
+        default=None,
+        help="Override the chat end-of-turn token appended to completions. Defaults to <|im_end|> when available.",
+    )
 
     # LoRA
     parser.add_argument("--lora-r", type=int, default=16)
@@ -122,10 +146,22 @@ def parse_args() -> argparse.Namespace:
         default="all-linear",
         help='Either "all-linear" or a comma-separated list like q_proj,k_proj,v_proj,o_proj',
     )
+    parser.add_argument(
+        "--use-rslora",
+        action="store_true",
+        help="Enable rank-stabilized LoRA scaling if your PEFT version supports it.",
+    )
+    parser.add_argument(
+        "--lora-init",
+        type=str,
+        default="default",
+        choices=["default", "gaussian", "pissa", "pissa_niter_4"],
+        help="LoRA initialization strategy.",
+    )
 
     # Training
     parser.add_argument("--output-dir", type=str, required=True)
-    parser.add_argument("--max-length", type=int, default=2048)
+    parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--packing", action="store_true", help="Pack multiple short samples into fixed-length sequences.")
     parser.add_argument("--per-device-train-batch-size", type=int, default=1)
     parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
@@ -136,13 +172,13 @@ def parse_args() -> argparse.Namespace:
         "--warmup-steps",
         type=float,
         default=0.03,
-        help="Warmup steps as an absolute int or ratio float (<1.0).",
+        help="If < 1.0, interpret as warmup_ratio. If >= 1, interpret as absolute warmup_steps.",
     )
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--num-train-epochs", type=float, default=3.0)
     parser.add_argument("--lr-scheduler-type", type=str, default="cosine")
-    parser.add_argument("--save-steps", type=int, default=10)
-    parser.add_argument("--eval-steps", type=int, default=10)
+    parser.add_argument("--save-steps", type=int, default=25)
+    parser.add_argument("--eval-steps", type=int, default=25)
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-total-limit", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
@@ -150,6 +186,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-from-checkpoint", type=str, default=None)
 
     return parser.parse_args()
+
+
+def ensure_supported_stack(model_name: str) -> None:
+    if "Qwen3.5" in model_name:
+        current = version.parse(transformers.__version__)
+        if current < version.parse("5.0.0"):
+            raise RuntimeError(
+                f"Qwen3.5 requires a recent Transformers build. Found transformers=={transformers.__version__}. "
+                "Install a v5/main build as recommended by the Qwen3.5 model card."
+            )
 
 
 def normalize_role(role: str) -> str:
@@ -173,13 +219,12 @@ def as_message_list(value: Any, default_role: str) -> List[Dict[str, str]]:
         return []
 
     if isinstance(value, str):
-        text = value.strip()
-        return [{"role": default_role, "content": text}] if text else []
+        return [{"role": default_role, "content": value}] if value else []
 
     if isinstance(value, dict):
         if "content" in value:
             role = normalize_role(str(value.get("role", default_role)))
-            content = str(value["content"]).strip()
+            content = str(value["content"])
             return [{"role": role, "content": content}] if content else []
         raise ValueError(f"Unsupported dict message format: {value.keys()}")
 
@@ -189,7 +234,7 @@ def as_message_list(value: Any, default_role: str) -> List[Dict[str, str]]:
             if not isinstance(item, dict) or "content" not in item:
                 raise ValueError(f"Unsupported list item in message list: {item!r}")
             role = normalize_role(str(item.get("role", default_role)))
-            content = str(item["content"]).strip()
+            content = str(item["content"])
             if content:
                 messages.append({"role": role, "content": content})
         return messages
@@ -197,7 +242,7 @@ def as_message_list(value: Any, default_role: str) -> List[Dict[str, str]]:
     raise ValueError(f"Unsupported message value type: {type(value)}")
 
 
-def split_messages_to_prompt_completion(messages: List[Dict[str, str]]) -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+def split_messages_to_prompt_completion(messages: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     If a row already contains a full conversation under `messages`, use the final assistant
     turn as completion and everything before it as prompt.
@@ -222,18 +267,15 @@ def split_messages_to_prompt_completion(messages: List[Dict[str, str]]) -> tuple
 
 
 def build_example(example: Dict[str, Any], user_field: str, assistant_field: str, system_prompt: str) -> Dict[str, Any]:
-    # Preferred: prompt/completion already present.
     if "prompt" in example and "completion" in example:
         prompt = as_message_list(example["prompt"], default_role="user")
         completion = as_message_list(example["completion"], default_role="assistant")
-    # Alternate: messages -> split last assistant message(s) as completion.
     elif "messages" in example:
         messages = as_message_list(example["messages"], default_role="user")
         prompt, completion = split_messages_to_prompt_completion(messages)
-    # Simple custom fields: problem/solution, instruction/response, etc.
     elif user_field in example and assistant_field in example:
-        prompt = [{"role": "user", "content": str(example[user_field]).strip()}]
-        completion = [{"role": "assistant", "content": str(example[assistant_field]).strip()}]
+        prompt = [{"role": "user", "content": str(example[user_field])}]
+        completion = [{"role": "assistant", "content": str(example[assistant_field])}]
     else:
         raise ValueError(
             f"Row must contain either prompt/completion, messages, or configured fields "
@@ -243,7 +285,7 @@ def build_example(example: Dict[str, Any], user_field: str, assistant_field: str
     if system_prompt:
         has_system = len(prompt) > 0 and normalize_role(prompt[0]["role"]) == "system"
         if not has_system:
-            prompt = [{"role": "system", "content": system_prompt.strip()}] + prompt
+            prompt = [{"role": "system", "content": system_prompt}] + prompt
 
     if not prompt:
         raise ValueError("Prompt is empty after preprocessing")
@@ -262,71 +304,110 @@ def load_json_dataset(path: str, split_name: str = "train") -> Dataset:
     if suffix not in {".json", ".jsonl"}:
         raise ValueError(f"Unsupported file extension {suffix!r}. Use .json or .jsonl.")
 
-    ds = load_dataset("json", data_files={split_name: str(file_path)})[split_name]
-    return ds
+    return load_dataset("json", data_files={split_name: str(file_path)})[split_name]
 
 
-def preprocess_row(
-    example: Dict[str, Any],
-    user_field: str,
-    assistant_field: str,
-    system_prompt: str,
-) -> Dict[str, Any]:
-    return build_example(example, user_field=user_field, assistant_field=assistant_field, system_prompt=system_prompt)
+def is_qwen3_family(model_name: str) -> bool:
+    lower = model_name.lower()
+    return "qwen3" in lower or "qwen3.5" in lower
 
 
-def preprocess_dataset(
+def is_qwen_base_model(model_name: str) -> bool:
+    return model_name.lower().endswith("-base")
+
+
+def parse_optional_json_dict(value: Optional[str], arg_name: str) -> Dict[str, Any]:
+    if value is None or value.strip() == "":
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{arg_name} must be valid JSON. Got: {value!r}") from e
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{arg_name} must decode to a JSON object, got {type(parsed)}")
+    return parsed
+
+
+def resolve_chat_template_kwargs(model_name: str, enable_thinking: bool, chat_template_kwargs_json: Optional[str]) -> Dict[str, Any]:
+    kwargs = parse_optional_json_dict(chat_template_kwargs_json, "--chat-template-kwargs-json")
+
+    # For post-trained Qwen3/Qwen3.5 checkpoints, default to non-thinking mode unless the user explicitly overrides.
+    if is_qwen3_family(model_name) and not is_qwen_base_model(model_name) and "enable_thinking" not in kwargs:
+        kwargs["enable_thinking"] = bool(enable_thinking)
+    elif enable_thinking and "enable_thinking" not in kwargs:
+        kwargs["enable_thinking"] = True
+
+    return kwargs
+
+
+def token_exists(tokenizer: Any, token: Optional[str]) -> bool:
+    if not token:
+        return False
+    try:
+        token_id = tokenizer.convert_tokens_to_ids(token)
+    except Exception:
+        return False
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+    if token_id is None:
+        return False
+    if unk_id is not None and token_id == unk_id and token != getattr(tokenizer, "unk_token", None):
+        return False
+    return True
+
+
+def infer_chat_eos_token(tokenizer: Any, override: Optional[str]) -> str:
+    if override:
+        return override
+    if token_exists(tokenizer, "<|im_end|>"):
+        return "<|im_end|>"
+    if tokenizer.eos_token:
+        return tokenizer.eos_token
+    raise ValueError("Could not infer a chat EOS token. Pass --chat-eos-token explicitly.")
+
+
+def normalize_message_dataset(
     dataset: Dataset,
     user_field: str,
     assistant_field: str,
     system_prompt: str,
-    tokenizer: Any,
-    max_length: int,
+    chat_template_kwargs: Dict[str, Any],
     num_proc: Optional[int] = None,
 ) -> Dataset:
     original_columns = dataset.column_names
-    processed = dataset.map(
-        preprocess_row,
-        fn_kwargs={
-            "user_field": user_field,
-            "assistant_field": assistant_field,
-            "system_prompt": system_prompt,
-        },
+
+    def _map_row(example: Dict[str, Any]) -> Dict[str, Any]:
+        row = build_example(example, user_field=user_field, assistant_field=assistant_field, system_prompt=system_prompt)
+        row["chat_template_kwargs"] = chat_template_kwargs
+        return row
+
+    return dataset.map(
+        _map_row,
         remove_columns=original_columns,
         num_proc=num_proc,
-        desc="Preprocessing dataset into conversational prompt-completion format",
+        desc="Normalizing dataset into conversational prompt-completion format",
     )
-    max_tokens_with_buffer = max_length - 10
-    processed = processed.filter(
-        lambda example: len(
-            tokenizer.apply_chat_template(
-                [
-                    {"role": str(msg.get("role", "")), "content": str(msg.get("content", ""))}
-                    for msg in [*example.get("prompt", []), *example.get("completion", [])]
-                ],
-                tokenize=True,
-                add_generation_prompt=False,
-            )
-        )
-        <= max_tokens_with_buffer,
-        desc="Dropping rows that exceed max sequence length",
-    )
-    return processed
 
 
 def maybe_shuffle_dataset(dataset: Dataset, seed: int, enabled: bool) -> Dataset:
     return dataset.shuffle(seed=seed) if enabled else dataset
 
 
-def apply_fim_transform(example: Dict[str, Any], rng: random.Random) -> Optional[Dict[str, Any]]:
-    completion = example.get("completion", [])
-    assistant_content = None
-    for message in reversed(completion):
+def extract_assistant_text(completion_messages: List[Dict[str, Any]]) -> str:
+    assistant_chunks: List[str] = []
+    for message in completion_messages:
         role = normalize_role(str(message.get("role", "")))
-        if role == "assistant":
-            assistant_content = str(message.get("content", "")).strip()
-            break
+        if role != "assistant":
+            raise ValueError(f"Completion contains non-assistant role: {role!r}")
+        content = str(message.get("content", ""))
+        if content:
+            assistant_chunks.append(content)
+    if not assistant_chunks:
+        raise ValueError("Completion does not contain assistant text")
+    return "\n\n".join(assistant_chunks)
 
+
+def apply_fim_transform(example: Dict[str, Any], rng: random.Random) -> Optional[Dict[str, Any]]:
+    assistant_content = extract_assistant_text(example.get("completion", []))
     if not assistant_content:
         return None
 
@@ -349,7 +430,15 @@ def apply_fim_transform(example: Dict[str, Any], rng: random.Random) -> Optional
     return {
         "prompt": prompt,
         "completion": [{"role": "assistant", "content": fim_content}],
+        "chat_template_kwargs": dict(example.get("chat_template_kwargs", {})),
     }
+
+
+def count_rows(dataset: Dataset) -> int:
+    try:
+        return dataset.num_rows
+    except Exception:
+        return len(dataset)
 
 
 def augment_with_fim(dataset: Dataset, fim_ratio: float, seed: int) -> Dataset:
@@ -377,6 +466,44 @@ def augment_with_fim(dataset: Dataset, fim_ratio: float, seed: int) -> Dataset:
     return concatenate_datasets([dataset, fim_dataset])
 
 
+def render_prompt_completion_strings(
+    dataset: Dataset,
+    tokenizer: Any,
+    max_length: int,
+    chat_eos_token: str,
+    num_proc: Optional[int] = None,
+) -> Dataset:
+    original_columns = dataset.column_names
+
+    def _render_row(example: Dict[str, Any]) -> Dict[str, str]:
+        prompt_messages = [
+            {"role": str(msg.get("role", "")), "content": str(msg.get("content", ""))}
+            for msg in example.get("prompt", [])
+        ]
+        chat_template_kwargs = dict(example.get("chat_template_kwargs", {}))
+        prompt_text = tokenizer.apply_chat_template(
+            prompt_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **chat_template_kwargs,
+        )
+        completion_text = extract_assistant_text(example.get("completion", [])) + chat_eos_token
+        return {"prompt": prompt_text, "completion": completion_text}
+
+    rendered = dataset.map(
+        _render_row,
+        remove_columns=original_columns,
+        num_proc=num_proc,
+        desc="Rendering examples with the tokenizer chat template",
+    )
+
+    rendered = rendered.filter(
+        lambda example: len(tokenizer(example["prompt"] + example["completion"], add_special_tokens=False)["input_ids"]) <= max_length,
+        desc="Dropping rows that exceed max sequence length",
+    )
+    return rendered
+
+
 def train_val_split(dataset: Dataset, validation_ratio: float, seed: int) -> DatasetDict:
     if not (0.0 < validation_ratio < 1.0):
         raise ValueError("--validation-split-ratio must be between 0 and 1 when --eval-file is omitted.")
@@ -384,12 +511,8 @@ def train_val_split(dataset: Dataset, validation_ratio: float, seed: int) -> Dat
     return DatasetDict(train=split["train"], validation=split["test"])
 
 
-def infer_precision(disable_bf16: bool) -> tuple[bool, bool, torch.dtype]:
-    use_bf16 = (
-        torch.cuda.is_available()
-        and torch.cuda.is_bf16_supported()
-        and not disable_bf16
-    )
+def infer_precision(disable_bf16: bool) -> Tuple[bool, bool, torch.dtype]:
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported() and not disable_bf16
     use_fp16 = torch.cuda.is_available() and not use_bf16
     compute_dtype = torch.bfloat16 if use_bf16 else (torch.float16 if use_fp16 else torch.float32)
     return use_bf16, use_fp16, compute_dtype
@@ -398,7 +521,6 @@ def infer_precision(disable_bf16: bool) -> tuple[bool, bool, torch.dtype]:
 def build_quant_config(use_4bit: bool, compute_dtype: torch.dtype) -> Optional[BitsAndBytesConfig]:
     if not use_4bit:
         return None
-
     return BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -413,40 +535,40 @@ def get_target_modules(value: str) -> str | List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def count_rows(dataset: Dataset) -> int:
-    try:
-        return dataset.num_rows
-    except Exception:
-        return len(dataset)
+def resolve_lora_init(value: str) -> bool | str:
+    if value == "default":
+        return True
+    return value
 
 
-def sample_preview(dataset: Dataset, n: int = 1) -> List[Dict[str, Any]]:
-    if count_rows(dataset) == 0:
-        return []
-    n = min(n, count_rows(dataset))
-    idxs = random.sample(range(count_rows(dataset)), k=n)
-    return [dataset[i] for i in idxs]
-
-
-def write_run_config(args: argparse.Namespace, output_dir: str) -> None:
+def write_run_config(args: argparse.Namespace, output_dir: str, chat_template_kwargs: Dict[str, Any], chat_eos_token: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
+    payload = vars(args).copy()
+    payload["resolved_chat_template_kwargs"] = chat_template_kwargs
+    payload["resolved_chat_eos_token"] = chat_eos_token
     with open(Path(output_dir) / "run_args.json", "w", encoding="utf-8") as f:
-        json.dump(vars(args), f, indent=2, ensure_ascii=False)
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def resolve_warmup(value: float) -> Tuple[int, float]:
+    if value < 0:
+        raise ValueError("--warmup-steps must be non-negative")
+    if value < 1.0:
+        return 0, float(value)
+    return int(value), 0.0
 
 
 def main() -> None:
     args = parse_args()
+    ensure_supported_stack(args.model_name)
     os.makedirs(args.output_dir, exist_ok=True)
     set_seed(args.seed)
-    write_run_config(args, args.output_dir)
 
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    # Load raw datasets.
     train_raw = load_json_dataset(args.train_file, split_name="train")
-
     if args.eval_file:
         eval_raw = load_json_dataset(args.eval_file, split_name="validation")
         datasets = DatasetDict(train=train_raw, validation=eval_raw)
@@ -455,56 +577,78 @@ def main() -> None:
     else:
         datasets = DatasetDict(train=train_raw)
 
-    # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name,
         trust_remote_code=args.trust_remote_code,
         use_fast=True,
     )
+
+    chat_template_kwargs = resolve_chat_template_kwargs(
+        model_name=args.model_name,
+        enable_thinking=args.enable_thinking,
+        chat_template_kwargs_json=args.chat_template_kwargs_json,
+    )
+    chat_eos_token = infer_chat_eos_token(tokenizer, args.chat_eos_token)
+
+    if tokenizer.eos_token is None:
+        tokenizer.eos_token = chat_eos_token
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token = tokenizer.eos_token or chat_eos_token
     tokenizer.padding_side = "right"
 
-    # Preprocess into conversational prompt-completion format.
-    datasets["train"] = preprocess_dataset(
+    write_run_config(args, args.output_dir, chat_template_kwargs=chat_template_kwargs, chat_eos_token=chat_eos_token)
+
+    datasets["train"] = normalize_message_dataset(
         datasets["train"],
         user_field=args.user_field,
         assistant_field=args.assistant_field,
         system_prompt=args.system_prompt,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
+        chat_template_kwargs=chat_template_kwargs,
         num_proc=args.dataset_num_proc,
     )
     datasets["train"] = maybe_shuffle_dataset(datasets["train"], seed=args.seed, enabled=args.shuffle_train)
+
     original_train_count = count_rows(datasets["train"])
-    datasets["train"] = augment_with_fim(
-        datasets["train"],
-        fim_ratio=args.fim_augmentation_ratio,
-        seed=args.seed,
-    )
+    datasets["train"] = augment_with_fim(datasets["train"], fim_ratio=args.fim_augmentation_ratio, seed=args.seed)
     augmented_train_count = count_rows(datasets["train"])
     fim_augmented_rows_added = augmented_train_count - original_train_count
 
+    datasets["train"] = render_prompt_completion_strings(
+        datasets["train"],
+        tokenizer=tokenizer,
+        max_length=args.max_length,
+        chat_eos_token=chat_eos_token,
+        num_proc=args.dataset_num_proc,
+    )
+
     if "validation" in datasets:
-        datasets["validation"] = preprocess_dataset(
+        datasets["validation"] = normalize_message_dataset(
             datasets["validation"],
             user_field=args.user_field,
             assistant_field=args.assistant_field,
             system_prompt=args.system_prompt,
+            chat_template_kwargs=chat_template_kwargs,
+            num_proc=args.dataset_num_proc,
+        )
+        datasets["validation"] = render_prompt_completion_strings(
+            datasets["validation"],
             tokenizer=tokenizer,
             max_length=args.max_length,
+            chat_eos_token=chat_eos_token,
             num_proc=args.dataset_num_proc,
         )
 
     print("=" * 80)
     print("Dataset summary")
+    print(f"Model: {args.model_name}")
+    print(f"Resolved chat_template_kwargs: {json.dumps(chat_template_kwargs, ensure_ascii=False)}")
+    print(f"Resolved chat EOS token: {chat_eos_token}")
     print(f"Train rows: {count_rows(datasets['train'])}")
-    print(f"FIM-augmented rows added: {fim_augmented_rows_added}")
+    print(f"FIM-augmented rows added before length filtering: {fim_augmented_rows_added}")
     if "validation" in datasets:
         print(f"Validation rows: {count_rows(datasets['validation'])}")
     print("=" * 80)
 
-    # Precision / quantization
     use_bf16, use_fp16, compute_dtype = infer_precision(disable_bf16=args.disable_bf16)
     quant_config = build_quant_config(args.use_4bit, compute_dtype=compute_dtype)
 
@@ -520,36 +664,41 @@ def main() -> None:
         attn_implementation=args.attn_implementation,
         device_map=device_map,
     )
-
     model.config.use_cache = False
 
     if args.use_4bit:
         model = prepare_model_for_kbit_training(model)
 
-    peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=get_target_modules(args.target_modules),
-    )
+    peft_kwargs: Dict[str, Any] = {
+        "r": args.lora_r,
+        "lora_alpha": args.lora_alpha,
+        "lora_dropout": args.lora_dropout,
+        "bias": "none",
+        "task_type": "CAUSAL_LM",
+        "target_modules": get_target_modules(args.target_modules),
+        "init_lora_weights": resolve_lora_init(args.lora_init),
+    }
+    if args.use_rslora:
+        peft_kwargs["use_rslora"] = True
 
+    peft_config = LoraConfig(**peft_kwargs)
     has_eval = "validation" in datasets
+    warmup_steps, warmup_ratio = resolve_warmup(args.warmup_steps)
 
     training_args = SFTConfig(
         output_dir=args.output_dir,
         max_length=args.max_length,
         packing=args.packing,
         dataset_num_proc=args.dataset_num_proc,
-        eos_token="<|im_end|>",
+        eos_token=chat_eos_token,
         pad_token=tokenizer.pad_token,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        warmup_steps=args.warmup_steps,
+        warmup_steps=warmup_steps,
+        warmup_ratio=warmup_ratio,
         max_grad_norm=args.max_grad_norm,
         num_train_epochs=args.num_train_epochs,
         lr_scheduler_type=args.lr_scheduler_type,
