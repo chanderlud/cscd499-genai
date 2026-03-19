@@ -1,18 +1,18 @@
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
+use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{
-CloseHandle, ERROR_DIRECTORY, ERROR_IO_PENDING, ERROR_NOTIFY_ENUM_DIR, HANDLE, WAIT_OBJECT_0,
+    CloseHandle, ERROR_DIRECTORY, ERROR_IO_PENDING, ERROR_NOTIFY_ENUM_DIR, HANDLE, WAIT_OBJECT_0,
 };
 use windows::Win32::Storage::FileSystem::{
-CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
-FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME,
-FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
+    CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED,
+    FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION,
+    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+    FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
-use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::core::{PCWSTR, Result};
+use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 #[derive(Clone, Copy)]
 struct SendHandle(HANDLE);
@@ -21,23 +21,23 @@ unsafe impl Send for SendHandle {}
 unsafe impl Sync for SendHandle {}
 
 impl SendHandle {
-fn into_inner(self) -> HANDLE {
-self.0
-}
+    fn into_inner(self) -> HANDLE {
+        self.0
+    }
 }
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
-use std::{iter::once, os::windows::ffi::OsStrExt};
-s.encode_wide().chain(once(0)).collect()
+    use std::{iter::once, os::windows::ffi::OsStrExt};
+    s.encode_wide().chain(once(0)).collect()
 }
 
 pub fn watch_dir(path: &Path, recursive: bool) -> Result<std::sync::mpsc::Receiver<Vec<u8>>> {
-if !path.is_dir() {
-return Err(windows::core::Error::new(
-ERROR_DIRECTORY.to_hresult(),
-"path is not a directory",
-));
-}
+    if !path.is_dir() {
+        return Err(windows::core::Error::new(
+            ERROR_DIRECTORY.to_hresult(),
+            "path is not a directory",
+        ));
+    }
 
     let wide_path = wide_null(path.as_os_str());
 
@@ -74,8 +74,10 @@ ERROR_DIRECTORY.to_hresult(),
         let mut buffer = vec![0u8; 4096];
 
         loop {
-            let mut overlapped = OVERLAPPED::default();
-            overlapped.hEvent = event;
+            let mut overlapped = OVERLAPPED {
+                hEvent: event,
+                ..Default::default()
+            };
 
             let result = unsafe {
                 ReadDirectoryChangesW(

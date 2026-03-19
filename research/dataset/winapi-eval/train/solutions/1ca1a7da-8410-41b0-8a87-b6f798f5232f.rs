@@ -1,5 +1,5 @@
 use std::io;
-use windows::core::{s, w, PCSTR, PCWSTR};
+use windows::core::{s, w};
 use windows::Win32::Foundation::FreeLibrary;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
@@ -34,7 +34,7 @@ pub fn dynamic_get_current_process_id() -> io::Result<u32> {
     })();
 
     // Free the library
-    unsafe { FreeLibrary(module) };
+    let _ = unsafe { FreeLibrary(module) };
 
     result
 }

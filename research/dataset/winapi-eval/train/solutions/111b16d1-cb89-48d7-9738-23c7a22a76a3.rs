@@ -1,5 +1,4 @@
 use windows::core::PCSTR;
-use windows::core::{Error, Result};
 
 pub fn pcstr_len(ptr: PCSTR) -> usize {
     // A null pointer has length 0

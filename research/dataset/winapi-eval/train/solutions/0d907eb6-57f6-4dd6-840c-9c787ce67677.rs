@@ -9,7 +9,6 @@ fn wide_null(s: &OsStr) -> Vec<u16> {
 }
 
 pub fn shell_stream_sha256(path: &Path) -> Result<[u8; 32]> {
-    use windows::Win32::Foundation::S_OK;
     use windows::Win32::Security::Cryptography::{
         BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash,
         BCryptHashData, BCryptOpenAlgorithmProvider, BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE,

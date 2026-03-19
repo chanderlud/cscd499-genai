@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
-use windows::core::{Error, Result, GUID, PWSTR};
+use windows::core::{Result, GUID};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 

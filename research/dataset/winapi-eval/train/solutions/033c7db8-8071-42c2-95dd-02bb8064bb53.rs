@@ -13,8 +13,7 @@ fn is_valid_mutex_name(name: &str) -> bool {
     // Mutex names cannot contain backslash except as first character for namespace
     // Also cannot contain null terminator (but Rust strings don't have nulls)
     // Allow backslashes only in namespace prefix (Global\ or Local\)
-    let mut chars = name.chars().enumerate();
-    while let Some((i, c)) = chars.next() {
+    for (i, c) in name.chars().enumerate() {
         if c == '\\' {
             // Only allow backslash at position 6 for "Global\" or position 5 for "Local\"
             if i != 6 && i != 5 {
@@ -66,8 +65,8 @@ pub fn named_mutex_already_exists(name: &str) -> std::io::Result<bool> {
     let wide_name_pcwstr = PCWSTR(wide_name.as_ptr());
 
     // SAFETY: CreateMutexW is called with valid parameters and we check the result
-    let handle = unsafe { CreateMutexW(None, false, wide_name_pcwstr) }
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let handle =
+        unsafe { CreateMutexW(None, false, wide_name_pcwstr) }.map_err(std::io::Error::other)?;
 
     // Check if the mutex already existed
     let already_exists = if handle != HANDLE::default() {
@@ -75,8 +74,7 @@ pub fn named_mutex_already_exists(name: &str) -> std::io::Result<bool> {
         let last_error = unsafe { GetLastError() };
 
         // SAFETY: We just obtained a valid handle from CreateMutexW
-        unsafe { CloseHandle(handle) }
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        unsafe { CloseHandle(handle) }.map_err(std::io::Error::other)?;
 
         // Compare the error code directly
         last_error == ERROR_ALREADY_EXISTS
