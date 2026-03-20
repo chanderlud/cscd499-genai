@@ -2,6 +2,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngExt;
 
     #[test]
     fn test_add() {
@@ -11,10 +12,10 @@ mod tests {
         assert!(add(5, 7) == 12);
         assert!(add(7, 5) == 12);
         for _ in 0..100 {
-            let mut rng = rand::thread_rng();
-            let mut x: i32 = rng.gen();
+            let mut rng = rand::rng();
+            let mut x: i32 = rng.random();
             x = x % 1000;
-            let mut y: i32 = rng.gen();
+            let mut y: i32 = rng.random();
             y = y % 1000;
 
             assert!(add(x, y) == x + y);

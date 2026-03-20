@@ -1,18 +1,18 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::Rng;
+    use rand::RngExt;
 
     fn random_alpha_string(len: usize) -> String {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut out = String::with_capacity(len);
 
         for _ in 0..len {
-            let upper = rng.gen_bool(0.5);
+            let upper = rng.random_bool(0.5);
             let c = if upper {
-                rng.gen_range(b'A'..=b'Z') as char
+                rng.random_range(b'A'..=b'Z') as char
             } else {
-                rng.gen_range(b'a'..=b'z') as char
+                rng.random_range(b'a'..=b'z') as char
             };
             out.push(c);
         }
@@ -71,10 +71,10 @@ mod tests {
 
     #[test]
     fn test_decode_encode_random_alpha_only() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for _ in 0..500 {
-            let len = rng.gen_range(0..=64);
+            let len = rng.random_range(0..=64);
             let s = random_alpha_string(len);
 
             let encoded = encode_shift(&s);
