@@ -1,5 +1,5 @@
 use std::path::Path;
-use windows::core::{Error, Result, HRESULT, PCWSTR};
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_WRITE_FAULT, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
