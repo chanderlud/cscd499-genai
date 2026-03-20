@@ -60,7 +60,7 @@ pub fn read_file_iocp(
     // Calculate number of chunks
     let chunk_size = chunk_size as usize;
     let max_in_flight = max_in_flight as usize;
-    let num_chunks = (file_size + chunk_size - 1) / chunk_size;
+    let num_chunks = file_size.div_ceil(chunk_size);
     let mut result = vec![0u8; file_size];
     let mut completed_chunks = 0;
     let mut next_chunk_to_read = 0;

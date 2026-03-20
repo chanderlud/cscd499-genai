@@ -171,7 +171,7 @@ pub fn named_pipe_fanout(pipe_name: &str, client_count: u32) -> std::io::Result<
 
     // Create pipe instances
     let handles = create_named_pipe_instances(&full_pipe_name, client_count)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     // Start server threads (no barrier needed)
     let mut server_handles = Vec::with_capacity(client_count as usize);
@@ -204,17 +204,17 @@ pub fn named_pipe_fanout(pipe_name: &str, client_count: u32) -> std::io::Result<
     // Collect results from client threads
     let mut results = Vec::with_capacity(client_count as usize);
     for handle in client_handles {
-        let result = handle.join().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Client thread panicked")
-        })??;
+        let result = handle
+            .join()
+            .map_err(|_| std::io::Error::other("Client thread panicked"))??;
         results.push(result);
     }
 
     // Wait for server threads to finish
     for handle in server_handles {
-        handle.join().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Server thread panicked")
-        })??;
+        handle
+            .join()
+            .map_err(|_| std::io::Error::other("Server thread panicked"))??;
     }
 
     Ok(results)

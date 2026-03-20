@@ -80,7 +80,7 @@ fn fetch_from_server(port: u16) -> Result<Vec<u8>> {
             0,
         );
         if connect.is_null() {
-            WinHttpCloseHandle(session);
+            WinHttpCloseHandle(session).ok();
             return Err(Error::from_thread());
         }
 
@@ -94,8 +94,8 @@ fn fetch_from_server(port: u16) -> Result<Vec<u8>> {
             WINHTTP_OPEN_REQUEST_FLAGS(0),
         );
         if request.is_null() {
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
+            WinHttpCloseHandle(connect).ok();
+            WinHttpCloseHandle(session).ok();
             return Err(Error::from_thread());
         }
 
@@ -125,9 +125,9 @@ fn fetch_from_server(port: u16) -> Result<Vec<u8>> {
             response_body.extend_from_slice(&buffer[..bytes_read as usize]);
         }
 
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        WinHttpCloseHandle(request).ok();
+        WinHttpCloseHandle(connect).ok();
+        WinHttpCloseHandle(session).ok();
 
         Ok(response_body)
     }

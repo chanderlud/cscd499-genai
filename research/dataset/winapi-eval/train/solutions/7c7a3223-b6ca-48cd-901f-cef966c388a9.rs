@@ -1,12 +1,12 @@
 use std::mem::{self, size_of, zeroed};
 use std::ptr::{null, null_mut};
 
+use windows::core::{Error, Result, BOOL, GUID, HRESULT, PSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
 };
 use windows::Win32::Networking::WinSock::*;
 use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
-use windows::core::{BOOL, Error, GUID, HRESULT, PSTR, Result};
 
 fn win32_error(code: u32) -> Error {
     Error::from_hresult(HRESULT::from_win32(code))
@@ -378,8 +378,8 @@ pub fn iocp_tcp_echo(payload: &[u8]) -> Result<Vec<u8>> {
                 check_wsa_zero(unsafe {
                     setsockopt(
                         accepted.0,
-                        SOL_SOCKET as i32,
-                        SO_UPDATE_ACCEPT_CONTEXT as i32,
+                        SOL_SOCKET,
+                        SO_UPDATE_ACCEPT_CONTEXT,
                         Some(socket_opt_bytes(&listener.0)),
                     )
                 })?;
@@ -400,12 +400,7 @@ pub fn iocp_tcp_echo(payload: &[u8]) -> Result<Vec<u8>> {
             Operation::Connect => {
                 // Finalize ConnectEx socket state.
                 check_wsa_zero(unsafe {
-                    setsockopt(
-                        client.0,
-                        SOL_SOCKET as i32,
-                        SO_UPDATE_CONNECT_CONTEXT as i32,
-                        None,
-                    )
+                    setsockopt(client.0, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, None)
                 })?;
 
                 check_wsa_overlapped_i32(unsafe {

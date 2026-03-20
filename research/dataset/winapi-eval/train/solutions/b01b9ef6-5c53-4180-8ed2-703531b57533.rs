@@ -1,20 +1,19 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
+use windows::core::{Error, Result, HRESULT, PWSTR};
 use windows::Win32::Foundation::{SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED};
 use windows::Win32::Security::Authentication::Identity::{
-    ASC_REQ_CONFIDENTIALITY, ASC_REQ_CONNECTION, ASC_REQ_FLAGS, ASC_REQ_INTEGRITY,
-    ASC_REQ_REPLAY_DETECT, ASC_REQ_SEQUENCE_DETECT, AcceptSecurityContext,
-    AcquireCredentialsHandleW, CompleteAuthToken, DecryptMessage, DeleteSecurityContext,
-    EncryptMessage, FreeContextBuffer, FreeCredentialsHandle, ISC_REQ_CONFIDENTIALITY,
+    AcceptSecurityContext, AcquireCredentialsHandleW, CompleteAuthToken, DecryptMessage,
+    DeleteSecurityContext, EncryptMessage, FreeContextBuffer, FreeCredentialsHandle,
+    InitializeSecurityContextW, QueryContextAttributesW, QuerySecurityPackageInfoW, SecBuffer,
+    SecBufferDesc, SecPkgContext_Sizes, ASC_REQ_CONFIDENTIALITY, ASC_REQ_CONNECTION, ASC_REQ_FLAGS,
+    ASC_REQ_INTEGRITY, ASC_REQ_REPLAY_DETECT, ASC_REQ_SEQUENCE_DETECT, ISC_REQ_CONFIDENTIALITY,
     ISC_REQ_CONNECTION, ISC_REQ_FLAGS, ISC_REQ_INTEGRITY, ISC_REQ_REPLAY_DETECT,
-    ISC_REQ_SEQUENCE_DETECT, InitializeSecurityContextW, QueryContextAttributesW,
-    QuerySecurityPackageInfoW, SECBUFFER_DATA, SECBUFFER_TOKEN, SECBUFFER_VERSION,
-    SECPKG_ATTR_SIZES, SECPKG_CRED, SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND,
-    SECURITY_NATIVE_DREP, SecBuffer, SecBufferDesc, SecPkgContext_Sizes, SecPkgInfoW,
+    ISC_REQ_SEQUENCE_DETECT, SECBUFFER_DATA, SECBUFFER_TOKEN, SECBUFFER_VERSION, SECPKG_ATTR_SIZES,
+    SECPKG_CRED, SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP,
 };
 use windows::Win32::Security::Credentials::SecHandle;
-use windows::core::{Error, HRESULT, PWSTR, Result};
 
 fn wide_null(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(once(0)).collect()
@@ -140,7 +139,7 @@ fn initialize_security_context(
         cbBuffer: max_token,
         BufferType: SECBUFFER_TOKEN,
     };
-    let mut output_desc = SecBufferDesc {
+    let mut desc = SecBufferDesc {
         ulVersion: SECBUFFER_VERSION,
         cBuffers: 1,
         pBuffers: &mut output_buffer,
@@ -157,17 +156,17 @@ fn initialize_security_context(
             if input_token.is_empty() {
                 None
             } else {
-                Some(&input_desc)
+                Some(&input_desc as *const _ as *mut _)
             },
             0,
             Some(context as *mut _),
-            Some(&mut output_desc),
+            Some(&desc as *const _ as *mut _),
             &mut context_attr,
             Some(&mut timestamp),
         )
     };
 
-    maybe_complete_auth_token(context, &mut output_desc, status)?;
+    maybe_complete_auth_token(context, &mut desc, status)?;
 
     if status.is_err() {
         return Err(Error::from_hresult(status));
@@ -210,7 +209,7 @@ fn accept_security_context(
         cbBuffer: max_token,
         BufferType: SECBUFFER_TOKEN,
     };
-    let mut output_desc = SecBufferDesc {
+    let mut desc = SecBufferDesc {
         ulVersion: SECBUFFER_VERSION,
         cBuffers: 1,
         pBuffers: &mut output_buffer,
@@ -223,18 +222,18 @@ fn accept_security_context(
             if input_token.is_empty() {
                 None
             } else {
-                Some(&input_desc)
+                Some(&input_desc as *const _ as *mut _)
             },
             ASC_REQ_FLAGS(context_req),
             SECURITY_NATIVE_DREP,
             Some(context as *mut _),
-            Some(&mut output_desc),
+            Some(&desc as *const _ as *mut _),
             &mut context_attr,
             Some(&mut timestamp),
         )
     };
 
-    maybe_complete_auth_token(context, &mut output_desc, status)?;
+    maybe_complete_auth_token(context, &mut desc, status)?;
 
     if status.is_err() {
         return Err(Error::from_hresult(status));
@@ -277,14 +276,14 @@ fn encrypt_message(
         },
     ];
 
-    let mut desc = SecBufferDesc {
+    let desc = SecBufferDesc {
         ulVersion: SECBUFFER_VERSION,
         cBuffers: buffers.len() as u32,
         pBuffers: buffers.as_mut_ptr(),
     };
 
     unsafe {
-        let status = EncryptMessage(context as *const _, 0, &mut desc, 0);
+        let status = EncryptMessage(context as *const _, 0, &desc as *const _ as *mut _, 0);
         if status.is_err() {
             return Err(Error::from_hresult(status));
         }
@@ -313,7 +312,7 @@ fn decrypt_message(context: &SecHandle, encrypted: &EncryptedMessage) -> Result<
         },
     ];
 
-    let mut desc = SecBufferDesc {
+    let desc = SecBufferDesc {
         ulVersion: SECBUFFER_VERSION,
         cBuffers: buffers.len() as u32,
         pBuffers: buffers.as_mut_ptr(),
@@ -322,7 +321,12 @@ fn decrypt_message(context: &SecHandle, encrypted: &EncryptedMessage) -> Result<
     let mut qop = 0u32;
 
     unsafe {
-        let status = DecryptMessage(context as *const _, &mut desc, 0, Some(&mut qop));
+        let status = DecryptMessage(
+            context as *const _,
+            &desc as *const _ as *mut _,
+            0,
+            Some(&mut qop),
+        );
         if status.is_err() {
             return Err(Error::from_hresult(status));
         }

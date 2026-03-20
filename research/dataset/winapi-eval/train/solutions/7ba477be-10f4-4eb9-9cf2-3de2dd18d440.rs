@@ -354,10 +354,7 @@ pub fn named_pipe_uppercase_echo(pipe_name: &str, msg: &str) -> io::Result<Strin
     match server_handle.join() {
         Ok(_) => {}
         Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Server thread panicked",
-            ));
+            return Err(io::Error::other("Server thread panicked"));
         }
     }
 
@@ -382,9 +379,8 @@ pub fn named_pipe_uppercase_echo(pipe_name: &str, msg: &str) -> io::Result<Strin
             io::ErrorKind::TimedOut,
             "Timeout waiting for server result",
         )),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "Server thread disconnected",
-        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("Server thread disconnected"))
+        }
     }
 }

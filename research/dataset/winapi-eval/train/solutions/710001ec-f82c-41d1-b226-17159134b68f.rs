@@ -1,11 +1,11 @@
+use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::System::Threading::{
-    CloseThreadpoolTimer, CreateEventW, CreateThreadpoolTimer, PTP_TIMER, SetEvent,
-    SetThreadpoolTimer, WaitForSingleObject, WaitForThreadpoolTimerCallbacks,
+    CloseThreadpoolTimer, CreateEventW, CreateThreadpoolTimer, SetEvent, SetThreadpoolTimer,
+    WaitForSingleObject, WaitForThreadpoolTimerCallbacks, PTP_TIMER,
 };
-use windows::core::{Error, PCWSTR, Result};
 
 unsafe extern "system" fn timer_callback(
     _instance: windows::Win32::System::Threading::PTP_CALLBACK_INSTANCE,
@@ -32,7 +32,7 @@ pub fn tp_timer_signal(due_ms: u32, timeout_ms: u32) -> Result<bool> {
     let timer = unsafe {
         match CreateThreadpoolTimer(
             Some(timer_callback),
-            Some(event.0 as *mut std::ffi::c_void),
+            Some(event.0), // Removed unnecessary cast
             None,
         ) {
             Ok(timer) => timer,

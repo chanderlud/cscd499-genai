@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use windows::core::{Error, Result, HRESULT, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_TIME,
@@ -43,8 +43,10 @@ pub fn run_in_job_with_timeout(command_line: &str, timeout_ms: u32) -> Result<bo
     }
 
     // Prepare process creation
-    let mut startup_info = STARTUPINFOW::default();
-    startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let startup_info = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
     let mut process_info = PROCESS_INFORMATION::default();
 
     let mut command_line_wide = wide_null(OsStr::new(command_line));
@@ -61,7 +63,7 @@ pub fn run_in_job_with_timeout(command_line: &str, timeout_ms: u32) -> Result<bo
             CREATE_SUSPENDED,
             None,
             None,
-            &mut startup_info,
+            &startup_info,
             &mut process_info,
         )?;
     }

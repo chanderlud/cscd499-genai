@@ -1,8 +1,8 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
+use windows::core::{Error, Result, PCWSTR, PSTR};
 use windows::Win32::Security::Cryptography::*;
-use windows::core::{Error, PCWSTR, PSTR, Result};
 
 fn wide_null(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(once(0)).collect()
@@ -175,10 +175,10 @@ pub fn crypt32_sign_verify_roundtrip(message: &[u8]) -> Result<Vec<u8>> {
 
     let sign_para = CRYPT_SIGN_MESSAGE_PARA {
         cbSize: std::mem::size_of::<CRYPT_SIGN_MESSAGE_PARA>() as u32,
-        dwMsgEncodingType: (X509_ASN_ENCODING | PKCS_7_ASN_ENCODING).0 as u32,
+        dwMsgEncodingType: (X509_ASN_ENCODING | PKCS_7_ASN_ENCODING).0,
         pSigningCert: ctx.cert,
         HashAlgorithm: CRYPT_ALGORITHM_IDENTIFIER {
-            pszObjId: PSTR(b"1.2.840.113549.1.1.5\0".as_ptr() as *mut u8),
+            pszObjId: PSTR(c"1.2.840.113549.1.1.5".as_ptr() as *mut u8),
             Parameters: Default::default(),
         },
         cMsgCert: msg_certs.len() as u32,
@@ -216,7 +216,7 @@ pub fn crypt32_sign_verify_roundtrip(message: &[u8]) -> Result<Vec<u8>> {
 
     let verify_para = CRYPT_VERIFY_MESSAGE_PARA {
         cbSize: std::mem::size_of::<CRYPT_VERIFY_MESSAGE_PARA>() as u32,
-        dwMsgAndCertEncodingType: (X509_ASN_ENCODING | PKCS_7_ASN_ENCODING).0 as u32,
+        dwMsgAndCertEncodingType: (X509_ASN_ENCODING | PKCS_7_ASN_ENCODING).0,
         ..Default::default()
     };
 

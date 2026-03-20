@@ -2,8 +2,7 @@ use std::path::Path;
 use windows::core::{Result, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, GENERIC_READ};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION,
-    FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_MODE, FILE_SHARE_READ,
+    CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ,
     OPEN_EXISTING,
 };
 

@@ -1,4 +1,4 @@
-use windows::core::{Error, Result};
+use windows::core::Result;
 use windows::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 
 pub fn align_mapping_offset(offset: u64) -> Result<(u64, u64, u32)> {

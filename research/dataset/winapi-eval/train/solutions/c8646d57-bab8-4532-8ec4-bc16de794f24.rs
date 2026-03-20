@@ -15,7 +15,6 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
 pub fn file_size(path: &Path) -> Result<u64> {
     let wide_path = wide_null(path.as_os_str());
 
-    // CreateFileW returns Result<HANDLE>
     let handle = unsafe {
         CreateFileW(
             PCWSTR(wide_path.as_ptr()),
@@ -31,8 +30,8 @@ pub fn file_size(path: &Path) -> Result<u64> {
     let mut size = 0i64;
     let result = unsafe { GetFileSizeEx(handle, &mut size) };
 
-    // Always close the handle
-    unsafe { CloseHandle(handle) };
+    // Always close the handle and propagate any error
+    unsafe { CloseHandle(handle) }?;
 
     // Check result properly
     match result {

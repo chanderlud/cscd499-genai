@@ -15,7 +15,7 @@ fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
 }
 
 // Define PKEY_Size manually since EnhancedStorage feature is not enabled
-const PKEY_Size: PROPERTYKEY = PROPERTYKEY {
+const PKEY_SIZE: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0xb725f130_47ef_101a_a5f1_02608c9eebac),
     pid: 12,
 };
@@ -45,11 +45,11 @@ pub fn property_size(path: &Path) -> Result<u64> {
     let property_store: IPropertyStore =
         unsafe { SHGetPropertyStoreFromParsingName(pcwstr, None, GPS_DEFAULT)? };
 
-    // Get the PKEY_Size value
-    let prop_variant = unsafe { property_store.GetValue(&PKEY_Size)? };
+    // Get the PKEY_SIZE value
+    let prop_variant = unsafe { property_store.GetValue(&PKEY_SIZE)? };
 
     // Extract the size value from PROPVARIANT
-    // PKEY_Size should be VT_UI8 (unsigned 64-bit integer)
+    // PKEY_SIZE should be VT_UI8 (unsigned 64-bit integer)
     let size = unsafe {
         if prop_variant.vt() != VT_UI8 {
             return Err(Error::from_hresult(E_INVALIDARG));

@@ -51,14 +51,14 @@ impl MappedFile {
                 return io::Error::new(io::ErrorKind::NotFound, "File not found");
             }
 
-            io::Error::new(io::ErrorKind::Other, e.to_string())
+            io::Error::other(e.to_string())
         })?;
 
         // Get file size
         let mut file_size_i64 = 0i64;
         // SAFETY: GetFileSizeEx is called with valid handle and pointer
         unsafe { GetFileSizeEx(file_handle, &mut file_size_i64) }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let file_size = file_size_i64 as usize;
 
@@ -89,7 +89,7 @@ impl MappedFile {
             unsafe {
                 let _ = CloseHandle(file_handle);
             }
-            io::Error::new(io::ErrorKind::Other, e.to_string())
+            io::Error::other(e.to_string())
         })?;
 
         // SAFETY: MapViewOfFile is called with valid parameters
@@ -100,7 +100,7 @@ impl MappedFile {
                 let _ = CloseHandle(mapping_handle);
                 let _ = CloseHandle(file_handle);
             }
-            return Err(io::Error::new(io::ErrorKind::Other, "MapViewOfFile failed"));
+            return Err(io::Error::other("MapViewOfFile failed"));
         }
 
         Ok(Self {

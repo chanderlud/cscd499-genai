@@ -66,13 +66,13 @@ pub fn wait_for_reg_change_hkcu(path: &str, timeout_ms: u32) -> Result<bool> {
 struct RegistryKeyGuard(HKEY);
 impl Drop for RegistryKeyGuard {
     fn drop(&mut self) {
-        unsafe { RegCloseKey(self.0) };
+        let _ = unsafe { RegCloseKey(self.0) };
     }
 }
 
 struct EventGuard(HANDLE);
 impl Drop for EventGuard {
     fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
+        let _ = unsafe { CloseHandle(self.0) };
     }
 }

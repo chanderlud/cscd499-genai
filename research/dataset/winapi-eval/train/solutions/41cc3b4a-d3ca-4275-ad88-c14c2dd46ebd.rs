@@ -30,7 +30,7 @@ fn wide_null(s: &OsStr) -> Vec<u16> {
 }
 
 fn to_io_error(e: Error) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e)
+    io::Error::other(e)
 }
 
 pub fn shm_event_handshake(base_name: &str, msg: &[u8]) -> io::Result<Vec<u8>> {
@@ -73,11 +73,8 @@ pub fn shm_event_handshake(base_name: &str, msg: &[u8]) -> io::Result<Vec<u8>> {
     };
 
     if view.Value.is_null() {
-        unsafe { CloseHandle(file_mapping) };
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Failed to map view of file",
-        ));
+        let _ = unsafe { CloseHandle(file_mapping) };
+        return Err(io::Error::other("Failed to map view of file"));
     }
 
     let shared_mem = view.Value as *mut SharedMemory;
@@ -92,20 +89,16 @@ pub fn shm_event_handshake(base_name: &str, msg: &[u8]) -> io::Result<Vec<u8>> {
     // Create events
     let data_ready = unsafe { CreateEventW(None, false, false, PCWSTR(data_ready_w.as_ptr())) }
         .map_err(|e| {
-            unsafe {
-                UnmapViewOfFile(view);
-                CloseHandle(file_mapping);
-            }
+            let _ = unsafe { UnmapViewOfFile(view) };
+            let _ = unsafe { CloseHandle(file_mapping) };
             to_io_error(e)
         })?;
 
     let ack_ready = unsafe { CreateEventW(None, false, false, PCWSTR(ack_ready_w.as_ptr())) }
         .map_err(|e| {
-            unsafe {
-                CloseHandle(data_ready);
-                UnmapViewOfFile(view);
-                CloseHandle(file_mapping);
-            }
+            let _ = unsafe { CloseHandle(data_ready) };
+            let _ = unsafe { UnmapViewOfFile(view) };
+            let _ = unsafe { CloseHandle(file_mapping) };
             to_io_error(e)
         })?;
 
@@ -157,12 +150,10 @@ pub fn shm_event_handshake(base_name: &str, msg: &[u8]) -> io::Result<Vec<u8>> {
             (*shared_mem_ptr).read_len = write_len as u32;
         }
 
-        unsafe { SetEvent(ack_ready_handle) }
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        unsafe { SetEvent(ack_ready_handle) }.map_err(io::Error::other)?;
 
         // Send received bytes back to main thread
-        tx.send(received)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        tx.send(received).map_err(io::Error::other)?;
 
         Ok(())
     });
@@ -176,24 +167,20 @@ pub fn shm_event_handshake(base_name: &str, msg: &[u8]) -> io::Result<Vec<u8>> {
 
     // Signal data_ready
     unsafe { SetEvent(data_ready) }.map_err(|e| {
-        unsafe {
-            CloseHandle(ack_ready);
-            CloseHandle(data_ready);
-            UnmapViewOfFile(view);
-            CloseHandle(file_mapping);
-        }
+        let _ = unsafe { CloseHandle(ack_ready) };
+        let _ = unsafe { CloseHandle(data_ready) };
+        let _ = unsafe { UnmapViewOfFile(view) };
+        let _ = unsafe { CloseHandle(file_mapping) };
         to_io_error(e)
     })?;
 
     // Wait for ack_ready
     let wait_result = unsafe { WaitForSingleObject(ack_ready, TIMEOUT_MS) };
     if wait_result != WAIT_OBJECT_0 {
-        unsafe {
-            CloseHandle(ack_ready);
-            CloseHandle(data_ready);
-            UnmapViewOfFile(view);
-            CloseHandle(file_mapping);
-        }
+        let _ = unsafe { CloseHandle(ack_ready) };
+        let _ = unsafe { CloseHandle(data_ready) };
+        let _ = unsafe { UnmapViewOfFile(view) };
+        let _ = unsafe { CloseHandle(file_mapping) };
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "Timeout waiting for acknowledgment",
@@ -201,22 +188,18 @@ pub fn shm_event_handshake(base_name: &str, msg: &[u8]) -> io::Result<Vec<u8>> {
     }
 
     // Get received bytes from consumer
-    let received = rx
-        .recv()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let received = rx.recv().map_err(io::Error::other)?;
 
     // Wait for consumer thread to finish
     consumer_handle
         .join()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))??;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))??;
 
     // Cleanup
-    unsafe {
-        CloseHandle(ack_ready);
-        CloseHandle(data_ready);
-        UnmapViewOfFile(view);
-        CloseHandle(file_mapping);
-    }
+    let _ = unsafe { CloseHandle(ack_ready) };
+    let _ = unsafe { CloseHandle(data_ready) };
+    let _ = unsafe { UnmapViewOfFile(view) };
+    let _ = unsafe { CloseHandle(file_mapping) };
 
     Ok(received)
 }

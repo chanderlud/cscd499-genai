@@ -1,13 +1,13 @@
 use std::io;
 use std::path::Path;
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
-    CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_WRITE,
-    WriteFile,
+    CreateFileW, WriteFile, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED,
+    FILE_GENERIC_WRITE,
 };
-use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::core::PCWSTR;
+use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
     use std::{iter::once, os::windows::ffi::OsStrExt};
@@ -34,8 +34,10 @@ pub fn overlapped_write_all(path: &Path, data: &[u8]) -> io::Result<u32> {
     let event_handle = unsafe { CreateEventW(None, true, false, None) }?;
 
     // Initialize OVERLAPPED structure
-    let mut overlapped = OVERLAPPED::default();
-    overlapped.hEvent = event_handle;
+    let mut overlapped = OVERLAPPED {
+        hEvent: event_handle,
+        ..Default::default()
+    };
 
     // Write data using overlapped I/O
     let mut bytes_written: u32 = 0;
@@ -60,10 +62,7 @@ pub fn overlapped_write_all(path: &Path, data: &[u8]) -> io::Result<u32> {
                 // Wait for the overlapped operation to complete
                 let wait_result = unsafe { WaitForSingleObject(event_handle, 0xFFFFFFFF) };
                 if wait_result != WAIT_OBJECT_0 {
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "WaitForSingleObject failed",
-                    ))
+                    Err(io::Error::other("WaitForSingleObject failed"))
                 } else {
                     // Get the result of the overlapped operation
                     unsafe {

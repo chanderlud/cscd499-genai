@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
-use windows::core::{Error, Result, HRESULT};
+use windows::core::{Error, Result};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG};
 use windows::Win32::System::Threading::{
     AcquireSRWLockExclusive, InitializeConditionVariable, InitializeSRWLock,
@@ -139,11 +139,8 @@ pub fn bounded_queue_stress(
         let queue = Arc::clone(&queue);
         consumer_handles.push(thread::spawn(move || -> Result<Vec<u32>> {
             let mut consumed = Vec::new();
-            loop {
-                match queue.pop()? {
-                    Some(item) => consumed.push(item),
-                    None => break,
-                }
+            while let Some(item) = queue.pop()? {
+                consumed.push(item);
             }
             Ok(consumed)
         }));
