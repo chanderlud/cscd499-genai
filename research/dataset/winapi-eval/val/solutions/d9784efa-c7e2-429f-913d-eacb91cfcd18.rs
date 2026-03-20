@@ -3,7 +3,7 @@ use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
 use windows::core::{Error, Result, HRESULT, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectAssociateCompletionPortInformation,
     SetInformationJobObject, JOBOBJECT_ASSOCIATE_COMPLETION_PORT,
@@ -14,7 +14,6 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED};
 
-// Job object message constants from Windows API
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 1;
 const JOB_OBJECT_MSG_EXIT_PROCESS: u32 = 2;
 const JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS: u32 = 3;
@@ -25,21 +24,18 @@ fn wide_null(s: &OsStr) -> Vec<u16> {
 }
 
 pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Result<(u32, Vec<u32>)> {
-    // Create job object
     let job = unsafe { CreateJobObjectW(None, None)? };
     if job.is_invalid() {
         return Err(Error::from_thread());
     }
 
-    // Create IO completion port
     let iocp = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, 0)? };
     if iocp.is_invalid() {
         unsafe { CloseHandle(job)? };
         return Err(Error::from_thread());
     }
 
-    // Associate job with completion port
-    let completion_key = 0x1234usize; // Arbitrary key for our job
+    let completion_key = 0x1234usize;
     let assoc = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
         CompletionKey: completion_key as *mut _,
         CompletionPort: iocp,
@@ -54,9 +50,10 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
         )?;
     }
 
-    // Create process suspended
-    let mut startup_info = STARTUPINFOW::default();
-    startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let startup_info = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
     let mut process_info = PROCESS_INFORMATION::default();
     let mut cmd_line_w = wide_null(OsStr::new(command_line));
     let cmd_line_pwstr = PWSTR(cmd_line_w.as_mut_ptr());
@@ -76,12 +73,10 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
         )?;
     }
 
-    // Assign process to job
     unsafe {
         AssignProcessToJobObject(job, process_info.hProcess)?;
     }
 
-    // Resume the process
     unsafe {
         ResumeThread(process_info.hThread);
         CloseHandle(process_info.hThread)?;
@@ -91,14 +86,12 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
     let mut messages = Vec::new();
     let mut child_exit_code = 0u32;
     let mut child_exited = false;
-    let mut active_processes = 1; // We started one process
+    let mut active_processes = 1;
 
-    // Wait for messages until job becomes empty or timeout
     let start_time = std::time::Instant::now();
     let timeout_duration = std::time::Duration::from_millis(timeout_ms as u64);
 
     while active_processes > 0 {
-        // Check timeout
         let elapsed = start_time.elapsed();
         if elapsed >= timeout_duration {
             unsafe {
@@ -106,7 +99,7 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
                 CloseHandle(job)?;
                 CloseHandle(iocp)?;
             }
-            return Err(Error::from_hresult(HRESULT::from_win32(0x000005B4))); // ERROR_TIMEOUT
+            return Err(Error::from_hresult(HRESULT::from_win32(0x000005B4)));
         }
 
         let remaining_ms = (timeout_duration - elapsed).as_millis() as u32;
@@ -126,7 +119,6 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
 
         match result {
             Ok(()) => {
-                // Check if this is our job's completion key
                 if completion_key_out == completion_key {
                     let msg_id = bytes_transferred;
                     messages.push(msg_id);
@@ -137,8 +129,7 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
                         }
                         JOB_OBJECT_MSG_EXIT_PROCESS | JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS => {
                             active_processes -= 1;
-                            // Check if this is our child process
-                            let exited_pid = overlapped_out as u32; // Process ID is passed in overlapped
+                            let exited_pid = overlapped_out as u32;
                             if exited_pid == process_info.dwProcessId {
                                 child_exited = true;
                                 unsafe {
@@ -154,9 +145,7 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
                 }
             }
             Err(e) => {
-                // Check if it's a timeout
                 if e.code() == HRESULT::from_win32(0x00000102) {
-                    // WAIT_TIMEOUT
                     continue;
                 }
                 unsafe {
@@ -169,7 +158,6 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
         }
     }
 
-    // If we haven't gotten the child exit code yet, wait for it
     if !child_exited {
         unsafe {
             WaitForSingleObject(child_process, timeout_ms);
@@ -177,7 +165,6 @@ pub fn run_in_job_collect_messages(command_line: &str, timeout_ms: u32) -> Resul
         }
     }
 
-    // Clean up
     unsafe {
         CloseHandle(child_process)?;
         CloseHandle(job)?;

@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, PCWSTR};
+use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{LocalFree, HLOCAL};
 use windows::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,

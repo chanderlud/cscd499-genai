@@ -46,7 +46,7 @@ pub fn verify_authenticode(path: &Path) -> Result<()> {
     let result = unsafe {
         WinVerifyTrust(
             HWND::default(),
-            &mut WINTRUST_ACTION_GENERIC_VERIFY_V2 as *mut _,
+            &WINTRUST_ACTION_GENERIC_VERIFY_V2 as *const _ as *mut _,
             &mut trust_data as *mut _ as *mut _,
         )
     };

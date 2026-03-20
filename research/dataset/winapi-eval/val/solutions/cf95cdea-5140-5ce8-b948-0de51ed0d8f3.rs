@@ -1,4 +1,4 @@
-use windows::core::{Error, Result, HRESULT};
+use windows::core::HRESULT;
 
 pub fn same_os_error(win: &windows::core::Error, io: &std::io::Error) -> bool {
     // Get the HRESULT from the windows::core::Error
