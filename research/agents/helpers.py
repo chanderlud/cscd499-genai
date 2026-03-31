@@ -451,6 +451,27 @@ def is_only_unused_warnings(eval_result: Dict[str, Any]) -> bool:
     return True
 
 
+def errors_in_tests(eval_result: Dict[str, Any]) -> bool:
+    test_markers = ("#[cfg(test)]", "mod tests")
+    for stage in ("build", "clippy"):
+        stage_data = eval_result.get(stage)
+        if not isinstance(stage_data, Mapping):
+            continue
+        diagnostics = stage_data.get("diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        items = diagnostics.get("items") or []
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            combined = f"{item.get('message') or ''}\n{item.get('rendered') or ''}"
+            if any(marker in combined for marker in test_markers):
+                return True
+    return False
+
+
 def format_failed_details(failed_details: Any, output_limit: int = 800) -> str:
     if not isinstance(failed_details, Sequence) or isinstance(failed_details, (str, bytes)):
         return ""
@@ -1140,6 +1161,7 @@ def build_repair_context(
     main_rs: str,
     rustdoc_info: str,
     problem_text: str,
+    tests_rs: Optional[str] = None,
 ) -> str:
     diagnostics = build_repair_message(eval_result, main_rs, problem_text=problem_text)
     diagnostics = truncate_feedback(diagnostics, 4000)
@@ -1168,12 +1190,21 @@ def build_repair_context(
             "4. **Use `std::thread::scope`**: when the thread must not outlive the current stack frame, use a scoped "
             "thread so borrowing is safe."
         )
+    tests_section = ""
+    if tests_rs is not None and errors_in_tests(eval_result):
+        tests_section = (
+            "## Test Code (errors detected here — you may fix this block)\n"
+            "```rust\n"
+            f"{tests_rs}\n"
+            "```\n\n"
+        )
 
     return (
         "## Previous Code\n"
         "```rust\n"
         f"{main_rs}\n"
         "```\n\n"
+        f"{tests_section}"
         "## Build/Test Results\n"
         f"{diagnostics}\n\n"
         "## Unresolved/Incorrect Symbol Information\n"
@@ -1182,7 +1213,8 @@ def build_repair_context(
         "- Fix the build errors listed above\n"
         "- Use the symbol paths from the Rustdoc resolution section for correct imports\n"
         "- Do not change the overall approach, only fix the specific errors\n"
-        "- Output the complete fixed src/main.rs in a single ```rust code fence\n"
+        "- Output the complete fixed src/main.rs in the first ```rust code fence\n"
+        "- If the test block itself has errors, output a second complete ```rust code fence for the fixed tests, beginning with `// tests`\n"
         f"{from_win32_confusion_hint}"
         f"{thread_send_hint}"
     )

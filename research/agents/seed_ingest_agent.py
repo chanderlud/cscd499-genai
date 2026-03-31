@@ -33,9 +33,10 @@ FIXED_DEPENDENCIES = (
 SYSTEM_PROMPT = """You are an expert Rust engineer specializing in Win32/Windows API programming using the `windows` crate.
 
 Output requirements:
-- Output exactly one complete `src/main.rs` inside a single ```rust code fence.
-- No explanation text outside the fence.
-- Do not include tests.
+- Output the complete `src/main.rs` inside the first ```rust code fence.
+- If the user explicitly asks you to repair tests, output the complete test block inside a second ```rust code fence.
+- No explanation text outside the fences.
+- Do not include tests unless the repair instructions explicitly ask for them.
 - Do not include `fn main()`.
 - Use only stable Rust.
 
@@ -148,7 +149,11 @@ Windows repair reminders:
   3. **Send work descriptions via channel instead of handles**: pass paths/IDs/other `Send` data, and open the handle on the worker.
   4. **Use `std::thread::scope`**: when the thread does not outlive the current frame, use scoped threads to borrow safely.
 
-Output the complete fixed src/main.rs in a single ```rust code fence.
+If the error is in the test block:
+- First fence: the complete fixed `src/main.rs`
+- Second fence: the complete fixed test block
+
+If the test code does not need changes, output only the first fence.
 """
 
 
@@ -159,6 +164,17 @@ class SeedIngestResult:
     tests_rs: str
     last_eval: Dict[str, Any]
     verified: bool
+
+
+def _extract_rust_fenced_blocks(text: str) -> list[str]:
+    if not isinstance(text, str):
+        return []
+    return [
+        match.group(2).strip()
+        for match in re.finditer(r"(`{3,})(?:rust|rs)[ \t]*\n(.*?)\1", text, re.IGNORECASE | re.DOTALL)
+        if match.group(2).strip()
+    ]
+
 
 def extract_seed_sections(seed_text: str) -> tuple[str, str, str]:
     def _is_solution_block(block: str) -> bool:
@@ -355,9 +371,11 @@ def verify_and_repair(
     )
 
     best_code = solution_rs
+    best_tests = tests_rs
     best_eval: Dict[str, Any] = {}
     best_score = 10**9
     previous_code = ""
+    previous_tests = ""
     same_streak = 0
     repair_context = ""
 
@@ -390,6 +408,9 @@ def verify_and_repair(
                     continue
 
                 extracted = extract_rust_code_block(response_text)
+                fenced_blocks = _extract_rust_fenced_blocks(response_text)
+                if fenced_blocks:
+                    extracted = fenced_blocks[0]
                 if extracted is None:
                     recorder.record_step(
                         attempt=attempt,
@@ -407,6 +428,12 @@ def verify_and_repair(
                     continue
 
                 code = extracted
+                if len(fenced_blocks) > 1:
+                    repaired_tests = fenced_blocks[1]
+                    if repaired_tests.startswith("// tests"):
+                        repaired_tests = repaired_tests[len("// tests"):].lstrip()
+                    if repaired_tests:
+                        tests_rs = repaired_tests
                 recorder.record_step(
                     attempt=attempt,
                     step_type="generate",
@@ -481,6 +508,7 @@ def verify_and_repair(
             if score < best_score:
                 best_score = score
                 best_code = code
+                best_tests = tests_rs
                 best_eval = eval_result
 
             if eval_result.get("ok") is True:
@@ -555,13 +583,15 @@ def verify_and_repair(
                 main_rs=code,
                 rustdoc_info=combined_info,
                 problem_text=problem_md,
+                tests_rs=tests_rs,
             )
 
-            if code.strip() == previous_code.strip():
+            if code.strip() == previous_code.strip() and tests_rs.strip() == previous_tests.strip():
                 same_streak += 1
             else:
                 same_streak = 0
             previous_code = code
+            previous_tests = tests_rs
 
             if same_streak >= 2:
                 hint = _first_diagnostic_hint(eval_result)
@@ -586,7 +616,7 @@ def verify_and_repair(
     return SeedIngestResult(
         problem_md=problem_md,
         solution_rs=best_code.rstrip() + "\n",
-        tests_rs=tests_rs.rstrip() + "\n",
+        tests_rs=best_tests.rstrip() + "\n",
         last_eval=best_eval,
         verified=False,
     )

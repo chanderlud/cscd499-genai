@@ -30,6 +30,10 @@ struct Cli {
     #[arg(long)]
     problems: PathBuf,
 
+    /// Path to an existing run_report.json; problems already present will be skipped.
+    #[arg(long)]
+    existing_results: Option<PathBuf>,
+
     /// Attempts per problem
     #[arg(long, default_value_t = 3)]
     k: usize,
@@ -132,13 +136,13 @@ struct PromptTemplate {
     user: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct RunReport {
     meta: RunMeta,
     problems: Vec<ProblemReport>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct RunMeta {
     started_unix_ms: u128,
     model: String,
@@ -148,7 +152,7 @@ struct RunMeta {
     openrouter_base: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ProblemReport {
     problem_id: String,
     problem: String,
@@ -156,7 +160,7 @@ struct ProblemReport {
     stats: ProblemStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct AttemptReport {
     attempt: usize,
     prompt: Option<String>,
@@ -275,7 +279,7 @@ struct OllamaMessage {
     content: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ProblemStats {
     attempts: usize,
     build_success_rate: f64,
@@ -305,6 +309,24 @@ async fn main() -> Result<()> {
     let template_raw = fs::read_to_string(&cli.template).context("read template")?;
     let template = parse_prompt_template(&template_raw, cli.prompt_mode);
     let problems = load_problems(&cli.problems)?;
+    let mut cached = if let Some(path) = &cli.existing_results {
+        let cached = load_existing_results(path)?;
+        let to_run_count = problems
+            .keys()
+            .filter(|problem_id| !cached.contains_key(*problem_id))
+            .count();
+        let skipped_count = problems.len() - to_run_count;
+        eprintln!(
+            "Skipping {skipped_count} cached problems; running {to_run_count} remaining"
+        );
+        cached
+    } else {
+        HashMap::new()
+    };
+    let to_run: HashMap<_, _> = problems
+        .into_iter()
+        .filter(|(problem_id, _)| !cached.contains_key(problem_id))
+        .collect();
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
@@ -315,9 +337,9 @@ async fn main() -> Result<()> {
 
     let started_unix_ms = now_unix_ms();
 
-    let problem_count = problems.len();
+    let problem_count = to_run.len();
 
-    let problem_reports: Vec<_> = stream::iter(problems.into_iter().enumerate())
+    let problem_reports: Vec<_> = stream::iter(to_run.into_iter().enumerate())
         .map(|(index, (problem_id, problem))| {
             let client = client.clone();
             let cli = cli.clone();
@@ -349,6 +371,13 @@ async fn main() -> Result<()> {
         .collect()
         .await;
 
+    for problem_report in problem_reports.into_iter().filter_map(|report| report.ok()) {
+        cached.insert(problem_report.problem_id.clone(), problem_report);
+    }
+
+    let mut merged_problem_reports: Vec<_> = cached.into_values().collect();
+    merged_problem_reports.sort_by(|a, b| a.problem_id.cmp(&b.problem_id));
+
     let report = RunReport {
         meta: RunMeta {
             started_unix_ms,
@@ -361,7 +390,7 @@ async fn main() -> Result<()> {
             eval_base: cli.eval_base.clone(),
             openrouter_base: cli.openrouter_base.clone(),
         },
-        problems: problem_reports.into_iter().filter_map(|r| r.ok()).collect(),
+        problems: merged_problem_reports,
     };
 
     // Write JSON report
@@ -1054,6 +1083,17 @@ fn load_problems(path: &Path) -> Result<HashMap<String, ProblemContents>> {
     let mut problem_file = File::open(path)?;
     let problems = serde_json::from_reader(&mut problem_file)?;
     Ok(problems)
+}
+
+fn load_existing_results(path: &Path) -> Result<HashMap<String, ProblemReport>> {
+    let mut report_file = File::open(path).context("open existing run_report.json")?;
+    let report: RunReport =
+        serde_json::from_reader(&mut report_file).context("parse existing run_report.json")?;
+    Ok(report
+        .problems
+        .into_iter()
+        .map(|problem_report| (problem_report.problem_id.clone(), problem_report))
+        .collect())
 }
 
 fn now_unix_ms() -> u128 {
