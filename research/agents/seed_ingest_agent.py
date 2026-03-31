@@ -160,7 +160,6 @@ class SeedIngestResult:
     last_eval: Dict[str, Any]
     verified: bool
 
-
 def extract_seed_sections(seed_text: str) -> tuple[str, str, str]:
     def _extract_fenced_blocks(text: str, lang_pattern: str) -> list[str]:
         blocks: list[str] = []
@@ -192,19 +191,44 @@ def extract_seed_sections(seed_text: str) -> tuple[str, str, str]:
     fence = problem_open_match.group(1)
     problem_start = problem_open_match.end()
     remainder = seed_text[problem_start:]
-    problem_close_matches = list(
-        re.finditer(
-            rf"^[ \t]{{0,3}}{re.escape(fence)}[ \t]*$",
-            remainder,
-            re.MULTILINE,
-        )
-    )
-    if not problem_close_matches:
-        raise ValueError("Missing closing markdown problem fence in seed file.")
-    problem_close_match = problem_close_matches[0]
+    inner_fence_pattern = re.compile(r"^[ \t]{0,3}(`{3,})\w*[ \t]*$")
+    outer_fence_pattern = re.compile(rf"^[ \t]{{0,3}}`{{{len(fence)},}}[ \t]*$")
+    inner_open_len: Optional[int] = None
+    problem_close_start: Optional[int] = None
+    problem_close_end: Optional[int] = None
+    offset = 0
 
-    problem_md = remainder[: problem_close_match.start()].strip()
-    after_markdown = remainder[problem_close_match.end() :]
+    for line in remainder.splitlines(keepends=True):
+        stripped_line = line.rstrip("\r\n")
+        handled_inner_fence = False
+        inner_fence_match = inner_fence_pattern.match(stripped_line)
+        if inner_fence_match:
+            inner_fence_len = len(inner_fence_match.group(1))
+            if inner_open_len is None:
+                if inner_fence_len < len(fence):
+                    inner_open_len = inner_fence_len
+                    handled_inner_fence = True
+            elif inner_fence_len >= inner_open_len:
+                inner_open_len = None
+                handled_inner_fence = True
+
+        if (
+            not handled_inner_fence
+            and inner_open_len is None
+            and outer_fence_pattern.match(stripped_line)
+        ):
+            problem_close_start = offset
+            problem_close_end = offset + len(line)
+            break
+
+        offset += len(line)
+
+    if problem_close_start is None or problem_close_end is None:
+        raise ValueError("Missing closing markdown problem fence in seed file.")
+
+    raw_problem = remainder[:problem_close_start]
+    problem_md = raw_problem.strip()
+    after_markdown = remainder[problem_close_end:]
 
     rust_blocks = _extract_fenced_blocks(after_markdown, "rust|rs")
     if not rust_blocks:
