@@ -161,8 +161,15 @@ class SeedIngestResult:
     verified: bool
 
 def extract_seed_sections(seed_text: str) -> tuple[str, str, str]:
-    def _extract_fenced_blocks(text: str, lang_pattern: str) -> list[str]:
-        blocks: list[str] = []
+    def _is_solution_block(block: str) -> bool:
+        if "#[cfg(test)]" in block or "pub fn" not in block:
+            return False
+        return "{" in block
+
+    def _extract_fenced_blocks_with_spans(
+        text: str, lang_pattern: str
+    ) -> list[tuple[int, int, int, int, str]]:
+        blocks: list[tuple[int, int, int, int, str]] = []
         opening_pattern = re.compile(
             rf"^[ \t]{{0,3}}(`{{3,}})(?:{lang_pattern})[ \t]*$",
             re.MULTILINE | re.IGNORECASE,
@@ -176,61 +183,91 @@ def extract_seed_sections(seed_text: str) -> tuple[str, str, str]:
             )
             closing_match = closing_pattern.search(text, opening_match.end())
             if closing_match:
-                blocks.append(text[opening_match.end() : closing_match.start()])
+                blocks.append(
+                    (
+                        opening_match.start(),
+                        opening_match.end(),
+                        closing_match.start(),
+                        closing_match.end(),
+                        text[opening_match.end() : closing_match.start()],
+                    )
+                )
 
         return blocks
+
+    def _extract_fenced_blocks(text: str, lang_pattern: str) -> list[str]:
+        return [block for _, _, _, _, block in _extract_fenced_blocks_with_spans(text, lang_pattern)]
 
     problem_open_match = re.search(
         r"^[ \t]{0,3}(`{3,})(markdown|md)[ \t]*$",
         seed_text,
         re.MULTILINE | re.IGNORECASE,
     )
-    if not problem_open_match:
-        raise ValueError("Missing markdown problem block in seed file.")
+    if problem_open_match:
+        fence = problem_open_match.group(1)
+        problem_start = problem_open_match.end()
+        remainder = seed_text[problem_start:]
+        inner_fence_pattern = re.compile(r"^[ \t]{0,3}(`{3,})\w*[ \t]*$")
+        outer_fence_pattern = re.compile(rf"^[ \t]{{0,3}}`{{{len(fence)},}}[ \t]*$")
+        inner_open_len: Optional[int] = None
+        problem_close_start: Optional[int] = None
+        problem_close_end: Optional[int] = None
+        offset = 0
 
-    fence = problem_open_match.group(1)
-    problem_start = problem_open_match.end()
-    remainder = seed_text[problem_start:]
-    inner_fence_pattern = re.compile(r"^[ \t]{0,3}(`{3,})\w*[ \t]*$")
-    outer_fence_pattern = re.compile(rf"^[ \t]{{0,3}}`{{{len(fence)},}}[ \t]*$")
-    inner_open_len: Optional[int] = None
-    problem_close_start: Optional[int] = None
-    problem_close_end: Optional[int] = None
-    offset = 0
-
-    for line in remainder.splitlines(keepends=True):
-        stripped_line = line.rstrip("\r\n")
-        handled_inner_fence = False
-        inner_fence_match = inner_fence_pattern.match(stripped_line)
-        if inner_fence_match:
-            inner_fence_len = len(inner_fence_match.group(1))
-            if inner_open_len is None:
-                if inner_fence_len < len(fence):
-                    inner_open_len = inner_fence_len
+        for line in remainder.splitlines(keepends=True):
+            stripped_line = line.rstrip("\r\n")
+            handled_inner_fence = False
+            inner_fence_match = inner_fence_pattern.match(stripped_line)
+            if inner_fence_match:
+                inner_fence_len = len(inner_fence_match.group(1))
+                if inner_open_len is None:
+                    if inner_fence_len < len(fence):
+                        inner_open_len = inner_fence_len
+                        handled_inner_fence = True
+                elif inner_fence_len >= inner_open_len:
+                    inner_open_len = None
                     handled_inner_fence = True
-            elif inner_fence_len >= inner_open_len:
-                inner_open_len = None
-                handled_inner_fence = True
 
-        if (
-            not handled_inner_fence
-            and inner_open_len is None
-            and outer_fence_pattern.match(stripped_line)
-        ):
-            problem_close_start = offset
-            problem_close_end = offset + len(line)
-            break
+            if (
+                not handled_inner_fence
+                and inner_open_len is None
+                and outer_fence_pattern.match(stripped_line)
+            ):
+                problem_close_start = offset
+                problem_close_end = offset + len(line)
+                break
 
-        offset += len(line)
+            offset += len(line)
 
-    if problem_close_start is None or problem_close_end is None:
-        raise ValueError("Missing closing markdown problem fence in seed file.")
+        if problem_close_start is None or problem_close_end is None:
+            raise ValueError("Missing closing markdown problem fence in seed file.")
 
-    raw_problem = remainder[:problem_close_start]
-    problem_md = raw_problem.strip()
-    after_markdown = remainder[problem_close_end:]
+        raw_problem = remainder[:problem_close_start]
+        problem_md = raw_problem.strip()
+        rust_blocks = _extract_fenced_blocks(remainder[problem_close_end:], "rust|rs")
+    else:
+        rust_block_spans = _extract_fenced_blocks_with_spans(seed_text, "rust|rs")
+        if not rust_block_spans:
+            raise ValueError("Missing markdown problem block in seed file.")
 
-    rust_blocks = _extract_fenced_blocks(after_markdown, "rust|rs")
+        solution_block = next(
+            (
+                block
+                for block in rust_block_spans
+                if _is_solution_block(block[4])
+            ),
+            None,
+        )
+        if solution_block is None:
+            raise ValueError("Missing Rust solution block containing `pub fn` and no `#[cfg(test)]`.")
+
+        problem_md = seed_text[: solution_block[0]].strip()
+        rust_blocks = [
+            block
+            for open_start, _, _, _, block in rust_block_spans
+            if open_start >= solution_block[0]
+        ]
+
     if not rust_blocks:
         raise ValueError("Missing Rust code blocks in seed file.")
 
@@ -238,7 +275,7 @@ def extract_seed_sections(seed_text: str) -> tuple[str, str, str]:
         (
             block.strip()
             for block in rust_blocks
-            if "pub fn" in block and "#[cfg(test)]" not in block
+            if _is_solution_block(block)
         ),
         None,
     )
