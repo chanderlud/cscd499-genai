@@ -117,9 +117,10 @@ async fn search_handler(
 
     if let Some(extractor) = &state.sig_extractor {
         for result in &mut results {
-            if result.signature.is_none() {
-                result.signature =
-                    extractor.extract_signature(&result.name, &result.kind, &result.path);
+            if let Some(signature) =
+                extractor.extract_signature(&result.name, &result.kind, &result.path)
+            {
+                result.signature = Some(signature);
             }
         }
     }
