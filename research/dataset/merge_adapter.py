@@ -3,8 +3,8 @@ from peft import PeftModel
 import torch
 
 base_model = "Qwen/Qwen3.5-9B-Base"
-adapter_dir = r"outputs/qwen35-rust-winapi-qlora"
-merged_dir = r"merged_qwen35_coder_rust_9b"
+adapter_dir = r"outputs/qwen35-rust-winapi-qlora-v2.1/checkpoint-150"
+merged_dir = r"merged_qwen35_coder_rust_9b_v2.1"
 
 tokenizer = AutoTokenizer.from_pretrained(base_model)
 

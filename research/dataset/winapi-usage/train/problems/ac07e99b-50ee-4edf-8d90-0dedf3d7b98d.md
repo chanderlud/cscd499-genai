@@ -1,0 +1,16 @@
+**Spec:** Write a function `call_open_personal_trust_db_dialog_ex` that calls `OpenPersonalTrustDBDialogEx` with concrete parameter values and returns the expected wrapper result.
+
+**Constraints:**
+- Call `OpenPersonalTrustDBDialogEx` with concrete parameter values
+- Return `windows::core::HRESULT` from the wrapper
+- Convert any API error into `HRESULT` rather than panicking
+
+**Signature:**
+```rust
+fn call_open_personal_trust_db_dialog_ex() -> windows::core::HRESULT
+```
+
+**Example:**
+```rust
+let hr = call_open_personal_trust_db_dialog_ex();
+```

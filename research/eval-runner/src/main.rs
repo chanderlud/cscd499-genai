@@ -731,7 +731,7 @@ fn strip_special_tokens(raw: &str) -> String {
 
 fn is_qwen35(model: &str) -> bool {
     let lowered = model.to_lowercase();
-    lowered.contains("qwen3.5") || lowered.contains("qwen3-5")
+    lowered.contains("qwen3.5") || lowered.contains("qwen3-5") || lowered.contains("qwen35")
 }
 
 fn detect_backend(base_url: &str) -> Backend {
@@ -885,8 +885,8 @@ async fn ollama_chat(
     };
     let num_predict = if qwen35 {
         cli.num_predict
-            .unwrap_or_else(|| max_tokens_override.unwrap_or(4096))
-            .min(4096)
+            .unwrap_or_else(|| max_tokens_override.unwrap_or(2048))
+            .min(2048)
     } else {
         cli.num_predict
             .unwrap_or_else(|| max_tokens_override.unwrap_or(cli.max_tokens))

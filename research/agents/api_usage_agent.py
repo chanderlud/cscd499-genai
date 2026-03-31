@@ -1349,7 +1349,7 @@ def generate_problems_from_manifest(
     index_by_id = {entry.id: idx for idx, entry in enumerate(entries)}
     eval_server_warmup(eval_base, client)
 
-    pending_entries = [entry for entry in entries if overwrite or entry.status != "ok"]
+    pending_entries = [entry for entry in entries if overwrite or entry.status == "pending"]
     if not pending_entries:
         LOGGER.info("generate_problems_from_manifest nothing_to_do manifest=%s", manifest_path)
         return

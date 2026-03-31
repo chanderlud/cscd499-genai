@@ -104,7 +104,7 @@ def parse_args() -> argparse.Namespace:
             f"you benchmarked. If you want the cleaner fine-tuning starting point, use {DEFAULT_QWEN35_BASE_MODEL!r}."
         ),
     )
-    parser.add_argument("--attn-implementation", type=str, default="sdpa", choices=["sdpa", "eager", "flash_attention_2"])
+    parser.add_argument("--attn-implementation", type=str, default="sdpa", choices=["sdpa", "eager", "flash_attention_2", "kernels-community/flash-attn2"])
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--use-4bit", action="store_true", help="Enable QLoRA 4-bit loading with bitsandbytes.")
     parser.add_argument("--no-use-4bit", dest="use_4bit", action="store_false")

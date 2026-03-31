@@ -39,14 +39,29 @@ class OpenRouterRateLimiter:
         self._lock = threading.Lock()
         self._last_submit_time = 0.0
         self._min_interval = min_interval
+        self._rate_limited_until = 0.0
 
     def acquire(self) -> None:
         with self._lock:
-            elapsed = time.monotonic() - self._last_submit_time
-            wait_time = max(0.0, self._min_interval - elapsed)
+            now = time.monotonic()
+            elapsed = now - self._last_submit_time
+            wait_time = max(
+                0.0,
+                self._min_interval - elapsed,
+                self._rate_limited_until - now,
+            )
             if wait_time > 0:
                 time.sleep(wait_time)
             self._last_submit_time = time.monotonic()
+
+    def notify_rate_limited(self, backoff_seconds: float = 900.0) -> None:
+        with self._lock:
+            self._rate_limited_until = time.monotonic() + backoff_seconds
+            wake_up_at = datetime.fromtimestamp(time.time() + backoff_seconds, tz=timezone.utc)
+            LOGGER.warning(
+                "openrouter rate_limit_backoff_until=%s",
+                wake_up_at.isoformat(),
+            )
 
 
 _OPENROUTER_RATE_LIMITER = OpenRouterRateLimiter()
@@ -740,6 +755,7 @@ def code_help_tool(prompt: str, run_id: str) -> str:
     read_timeout_s = int(os.getenv("OPENROUTER_READ_TIMEOUT", "600"))
     timeout = httpx.Timeout(connect=10.0, read=float(read_timeout_s), write=30.0, pool=10.0)
 
+    _OPENROUTER_RATE_LIMITER.acquire()
     started = time.perf_counter()
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -844,6 +860,17 @@ def code_help_tool(prompt: str, run_id: str) -> str:
                 usage.get("total_tokens"),
             )
             return content
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            _OPENROUTER_RATE_LIMITER.notify_rate_limited()
+            LOGGER.warning("openrouter_generate_code rate_limited_429 sleeping 15 min")
+        LOGGER.warning(
+            "review_code_with_openrouter failed run_id=%s error=%s: %s",
+            run_id,
+            type(e).__name__,
+            e,
+        )
+        return ""
     except Exception as e:
         LOGGER.warning(
             "review_code_with_openrouter failed run_id=%s error=%s: %s",
@@ -906,6 +933,9 @@ def openrouter_generate_code(messages: List[Dict[str, str]]) -> Optional[str]:
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPError as exc:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+            _OPENROUTER_RATE_LIMITER.notify_rate_limited()
+            LOGGER.warning("openrouter_generate_code rate_limited_429 sleeping 15 min")
         LOGGER.warning("openrouter_generate_code http_error=%s", exc)
         return None
     except Exception as exc:

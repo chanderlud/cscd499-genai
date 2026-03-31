@@ -1,5 +1,4 @@
 use windows::core::HRESULT;
-#[allow(unused_imports)]
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::WIN32_ERROR;
 
