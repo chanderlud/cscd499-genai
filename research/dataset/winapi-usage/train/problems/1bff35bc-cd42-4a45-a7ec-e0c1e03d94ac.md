@@ -1,0 +1,16 @@
+**Spec:** Write a function `call_adjust_window_rect` that calls `AdjustWindowRect` with concrete parameter values and returns the expected wrapper result.
+
+**Constraints:**
+- Call `AdjustWindowRect` with concrete parameter values
+- Return `windows::core::HRESULT` from the wrapper
+- Convert any API error into `HRESULT` rather than panicking
+
+**Signature:**
+```rust
+fn call_adjust_window_rect() -> windows::core::HRESULT
+```
+
+**Example:**
+```rust
+let hr = call_adjust_window_rect();
+```

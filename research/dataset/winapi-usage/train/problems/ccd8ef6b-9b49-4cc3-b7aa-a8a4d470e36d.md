@@ -1,0 +1,16 @@
+**Spec:** Write a function `call_bind_io_completion_callback` that calls `BindIoCompletionCallback` with concrete parameter values and returns the expected wrapper result.
+
+**Constraints:**
+- Call `BindIoCompletionCallback` with concrete parameter values
+- Return `windows::Win32::Foundation::WIN32_ERROR` from the wrapper
+- Convert any API error into `WIN32_ERROR` rather than panicking
+
+**Signature:**
+```rust
+fn call_bind_io_completion_callback() -> windows::Win32::Foundation::WIN32_ERROR
+```
+
+**Example:**
+```rust
+let err = call_bind_io_completion_callback();
+```
