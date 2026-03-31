@@ -902,25 +902,54 @@ def generate_manifest(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = _manifest_path(output_dir)
+    existing_entries: List[ManifestEntry] = []
+    existing_api_paths: set[str] = set()
+    selection_limit = max_functions
+    mode = "full"
     if manifest_path.exists() and not overwrite:
-        LOGGER.info("generate_manifest reuse_existing path=%s", manifest_path)
-        return manifest_path
+        existing_entries = _load_manifest_entries(manifest_path)
+        existing_api_paths = {entry.api_path for entry in existing_entries if entry.api_path}
+        existing_function_count = len(existing_api_paths)
+        if existing_function_count >= max_functions:
+            LOGGER.info(
+                "generate_manifest reuse_existing path=%s existing_functions=%s max_functions=%s",
+                manifest_path,
+                existing_function_count,
+                max_functions,
+            )
+            return manifest_path
+        selection_limit = max_functions - existing_function_count
+        mode = "topup"
 
     functions, scan_summary = scan_windows_src(
         src_root,
         enabled_features=ENABLED_WINDOWS_FEATURES,
         win32_only=win32_only,
     )
-    selected_functions = _select_functions_stratified(functions, max_functions)
+    candidate_functions = functions
+    if mode == "topup":
+        candidate_functions = [
+            function for function in functions if function["api_path"] not in existing_api_paths
+        ]
+    selected_functions = _select_functions_stratified(candidate_functions, selection_limit)
+    if mode == "topup" and not selected_functions:
+        LOGGER.warning(
+            "generate_manifest no_new_candidates path=%s existing_functions=%s max_functions=%s",
+            manifest_path,
+            len(existing_api_paths),
+            max_functions,
+        )
+        return manifest_path
     LOGGER.info(
-        "generate_manifest scan_summary files_scanned=%s pub_fn_declarations=%s link_wrappers=%s feature_enabled_wrappers=%s selected_functions=%s",
+        "generate_manifest scan_summary files_scanned=%s pub_fn_declarations=%s link_wrappers=%s feature_enabled_wrappers=%s selected_functions=%s mode=%s",
         scan_summary.files_scanned,
         scan_summary.pub_fn_declarations,
         scan_summary.link_wrappers,
         scan_summary.feature_enabled_wrappers,
         len(selected_functions),
+        mode,
     )
-    manifest_entries: List[ManifestEntry] = []
+    new_entries: List[ManifestEntry] = []
     related_items_by_index: List[List[Dict[str, Any]]] = [[] for _ in selected_functions]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, manifest_workers)) as executor:
@@ -948,7 +977,7 @@ def generate_manifest(
 
     for function, related_items in zip(selected_functions, related_items_by_index):
         for variation in variations:
-            manifest_entries.append(
+            new_entries.append(
                 ManifestEntry(
                     id=str(uuid.uuid4()),
                     api_name=function["name"],
@@ -961,11 +990,15 @@ def generate_manifest(
                 )
             )
 
+    manifest_entries = existing_entries + new_entries
     _write_manifest_entries(manifest_path, manifest_entries)
     LOGGER.info(
-        "generate_manifest wrote path=%s functions=%s entries=%s",
+        "generate_manifest wrote path=%s mode=%s existing_entries=%s new_functions=%s new_entries=%s entries=%s",
         manifest_path,
+        mode,
+        len(existing_entries),
         len(selected_functions),
+        len(new_entries),
         len(manifest_entries),
     )
     return manifest_path
