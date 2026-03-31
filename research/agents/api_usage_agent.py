@@ -889,6 +889,36 @@ def _write_manifest_entries(manifest_path: Path, entries: List[ManifestEntry]) -
     temp_path.replace(manifest_path)
 
 
+def extract_symbols_from_rust_folder(folder: Path) -> set[str]:
+    ignore = {
+        "Result",
+        "Error",
+        "Option",
+        "Some",
+        "None",
+        "Ok",
+        "Err",
+        "String",
+        "Vec",
+        "Self",
+        "HRESULT",
+        "Windows",
+        "Win32",
+    }
+    symbols: set[str] = set()
+    for file_path in folder.rglob("*.rs"):
+        try:
+            source = file_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            LOGGER.warning("extract_symbols_from_rust_folder read_failed file=%s error=%s", file_path, exc)
+            continue
+        for match in re.findall(r"\b([A-Z][A-Za-z0-9_]+|[A-Z0-9_]{2,})\b", source):
+            if match not in ignore:
+                symbols.add(match)
+    LOGGER.info("extract_symbols_from_rust_folder folder=%s symbols_found=%s", folder, len(symbols))
+    return symbols
+
+
 def generate_manifest(
     src_root: Path,
     output_dir: Path,
@@ -897,6 +927,7 @@ def generate_manifest(
     max_functions: int,
     manifest_workers: int,
     variations: List[str],
+    priority_symbols: Optional[set[str]] = None,
     win32_only: bool = True,
     overwrite: bool = False,
 ) -> Path:
@@ -931,6 +962,14 @@ def generate_manifest(
         candidate_functions = [
             function for function in functions if function["api_path"] not in existing_api_paths
         ]
+    if priority_symbols:
+        priority_functions = [
+            function for function in candidate_functions if function["name"] in priority_symbols
+        ]
+        remaining_functions = [
+            function for function in candidate_functions if function["name"] not in priority_symbols
+        ]
+        candidate_functions = priority_functions + remaining_functions
     selected_functions = _select_functions_stratified(candidate_functions, selection_limit)
     if mode == "topup" and not selected_functions:
         LOGGER.warning(
@@ -1481,6 +1520,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip manifest regeneration when an existing manifest is already present.",
     )
+    parser.add_argument(
+        "--priority-src",
+        default=None,
+        help="Path to a folder of Rust files whose Windows symbols are used as priority targets in the manifest.",
+    )
     args = parser.parse_args()
 
     src_root = Path(args.src_root)
@@ -1488,9 +1532,11 @@ if __name__ == "__main__":
     manifest_path = _manifest_path(output_dir)
     eval_base = env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
     rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
+    priority_src = Path(args.priority_src).resolve() if args.priority_src is not None else None
+    priority_symbols = extract_symbols_from_rust_folder(priority_src) if priority_src is not None else set()
 
     LOGGER.info(
-        "windows_api_usage_agent start src_root=%s output_dir=%s max_functions=%s variations=%s max_attempts=%s workers=%s manifest_workers=%s overwrite=%s win32_only=%s skip_manifest=%s cwd=%s",
+        "windows_api_usage_agent start src_root=%s output_dir=%s max_functions=%s variations=%s max_attempts=%s workers=%s manifest_workers=%s overwrite=%s win32_only=%s skip_manifest=%s priority_src=%s priority_symbols_count=%s cwd=%s",
         src_root,
         output_dir,
         args.max_functions,
@@ -1501,6 +1547,8 @@ if __name__ == "__main__":
         args.overwrite,
         args.win32_only,
         args.skip_manifest,
+        priority_src,
+        len(priority_symbols),
         os.getcwd(),
     )
 
@@ -1518,6 +1566,7 @@ if __name__ == "__main__":
                 max_functions=args.max_functions,
                 manifest_workers=args.manifest_workers,
                 variations=list(args.variations),
+                priority_symbols=priority_symbols,
                 win32_only=args.win32_only,
                 overwrite=args.overwrite,
             )
