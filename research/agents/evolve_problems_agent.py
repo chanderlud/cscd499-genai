@@ -2,6 +2,7 @@ import argparse
 import concurrent.futures
 import os
 import random
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,7 @@ STRATEGY_API_FORM_SHIFT = "api_form_shift"
 STRATEGY_ALGORITHMIC_SHIFT = "algorithmic_shift"
 STRATEGY_ADVERSARIAL = "adversarial"
 STRATEGY_MERGE = "merge"
+STRATEGY_PARAM_SPECIALIZATION = "param_specialization"
 STRATEGY_RANDOM = "random"
 
 STRATEGY_DESCRIPTIONS: Dict[str, str] = {
@@ -53,7 +55,15 @@ STRATEGY_DESCRIPTIONS: Dict[str, str] = {
     STRATEGY_ALGORITHMIC_SHIFT: "Keep semantics but target a different algorithmic approach or edge-case regime.",
     STRATEGY_ADVERSARIAL: "Include a plausible-but-wrong hint/reference approach the solver must avoid.",
     STRATEGY_MERGE: "Combine 2-3 source problems into one harder composite challenge.",
+    STRATEGY_PARAM_SPECIALIZATION: "Expand one API-usage problem into several problems, each requiring specific non-default parameter values for the API call.",
 }
+
+PARAM_SPECIALIZATION_INSTRUCTION = (
+    "Expand one API-usage problem into several problems, each requiring a specific non-default parameter "
+    "value combination for the API call. Keep the same API and wrapper function name. Add a `**Constraints:**` "
+    "bullet that explicitly requires the chosen parameter values, and update the `**Example:**` block to show "
+    "those values at the call site."
+)
 
 _STRATEGY_INSTRUCTIONS: Dict[str, str] = {
     STRATEGY_CONSTRAINT_SHIFT: (
@@ -75,6 +85,7 @@ _STRATEGY_INSTRUCTIONS: Dict[str, str] = {
         "Combine the provided source problems into one harder composite problem that requires solving both sub-tasks "
         "in a single function or module."
     ),
+    STRATEGY_PARAM_SPECIALIZATION: PARAM_SPECIALIZATION_INSTRUCTION,
 }
 
 EVOLUTION_SYSTEM_PROMPT = """You are a technical problem-statement author for Rust/Win32 coding challenges.
@@ -123,6 +134,66 @@ NO_MORE_IDEAS
 {source_problems}
 """
 
+PARAM_ENUMERATION_SYSTEM_PROMPT = """You are a Win32 API expert.
+
+Enumerate 2-4 distinct, meaningful parameter value combinations for a target API call found in a Rust solution.
+
+Rules:
+- Output a numbered list only, with one combination per line.
+- Each line must contain a short parameter label followed by a one-sentence rationale.
+- Prefer non-trivial, non-default combinations that change the semantics, access rights, mode, flags, or behavior of the API call.
+- Avoid combinations that are only null, zero, FALSE, empty, or other default placeholders unless paired with meaningful non-default values.
+- Limit the output to 2-4 combinations total.
+- Do not include any prose before or after the list.
+"""
+
+PARAM_ENUMERATION_USER_TEMPLATE = """Inspect the source problem and reference solution below.
+
+Identify the primary Win32 API call in the solution, then enumerate 2-4 meaningful parameter value combinations for that call.
+
+## Source problem
+{problem_md}
+
+## Reference solution
+```rust
+{solution_rs}
+```
+"""
+
+PARAM_SPECIALIZATION_EVOLUTION_USER_TEMPLATE = """Evolve one NEW Rust/Win32 challenge from the source material below.
+
+Strategy:
+- key: {strategy_key}
+- description: {strategy_description}
+
+Strategy-specific requirement:
+{strategy_instruction}
+
+Specific parameter combination to require:
+- values: {param_label}
+- rationale: {param_rationale}
+
+Already generated evolved ideas:
+{previously_generated}
+
+If there are no more meaningfully different ideas left for the selected source set, respond with exactly:
+NO_MORE_IDEAS
+
+Requirements for this evolved problem:
+- Keep the same Win32 API and the same wrapper function name as the source problem.
+- Add a `**Constraints:**` bullet that explicitly requires the specific parameter values from `{param_label}`.
+- Update the `**Example:**` block so the call site visibly uses those values.
+- Follow the exact `TITLE:` / `PROBLEM:` / `**Spec:**` / `**Constraints:**` / `**Signature:**` / `**Example:**` structure.
+
+## Source problem
+{source_problem}
+
+## Reference solution
+```rust
+{source_solution}
+```
+"""
+
 MISLEADING_HINT_SYSTEM_PROMPT = """You are generating a deliberately flawed Rust hint snippet.
 
 Rules:
@@ -135,6 +206,34 @@ Rules:
 MISLEADING_HINT_USER_TEMPLATE = """Create a subtly wrong variant of this solution:
 ```rust
 {main_rs}
+```
+"""
+
+ALIGNMENT_JUDGE_SYSTEM_PROMPT = """You are a strict judge for Rust/Win32 coding challenges.
+
+Read the problem requirements and the candidate solution, then decide whether the solution fully satisfies every requirement.
+
+Respond with exactly one of:
+VERDICT: PASS
+
+or
+VERDICT: FAIL
+REASON: <one sentence>
+
+Rules:
+- Do not include any prose outside the verdict block.
+- Be strict about the required function signature, constraints, specification details, and example behavior.
+- Fail the solution if it violates, ignores, or changes any requirement in the problem statement.
+"""
+
+ALIGNMENT_JUDGE_USER_TEMPLATE = """Judge whether this candidate solution satisfies the evolved problem exactly.
+
+## Evolved problem
+{problem_md}
+
+## Candidate solution
+```rust
+{solution_code}
 ```
 """
 
@@ -228,7 +327,9 @@ def _format_previous_ideas(previously_generated: Sequence[EvolvedProblemResult])
 
 def _resolve_strategy(strategy: str) -> str:
     if strategy == STRATEGY_RANDOM:
-        return random.choice(list(STRATEGY_DESCRIPTIONS.keys()))
+        return random.choice(
+            [key for key in STRATEGY_DESCRIPTIONS.keys() if key != STRATEGY_PARAM_SPECIALIZATION]
+        )
     if strategy not in STRATEGY_DESCRIPTIONS:
         raise ValueError(f"Unsupported strategy: {strategy}")
     return strategy
@@ -300,6 +401,725 @@ def _format_source_problems(selected: Sequence[SourceProblem], strategy: str) ->
             blocks.append("```")
         blocks.append("")
     return "\n".join(blocks).strip()
+
+
+def _parse_param_combinations(response_text: str) -> List[Tuple[str, str]]:
+    combinations: List[Tuple[str, str]] = []
+    prefix_pattern = re.compile(r"^(?:(?:\d+|[A-Za-z])[\.\)]|[-*])\s+")
+    split_pattern = re.compile(r"^(.+?)\s*(?:[-–—:]\s+)(.+)$")
+    for raw_line in response_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        normalized = prefix_pattern.sub("", line, count=1).strip()
+        if not normalized:
+            continue
+        if normalized.endswith(":"):
+            continue
+
+        match = split_pattern.match(normalized)
+        if match:
+            label = match.group(1).strip()
+            rationale = match.group(2).strip()
+        else:
+            label = normalized
+            rationale = ""
+
+            # Fallback for mildly drifted output that uses prose instead of a
+            # strict numbered list, while still preserving an optional rationale.
+            sentence_match = re.match(r"^(.+?[.!?])\s+(.+)$", normalized)
+            if sentence_match:
+                label = sentence_match.group(1).strip()
+                rationale = sentence_match.group(2).strip()
+        if label:
+            combinations.append((label, rationale))
+    return combinations
+
+
+def _enumerate_param_combinations(source: SourceProblem) -> List[Tuple[str, str]]:
+    messages = [
+        {"role": "system", "content": PARAM_ENUMERATION_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": PARAM_ENUMERATION_USER_TEMPLATE.format(
+                problem_md=source.problem_md.strip(),
+                solution_rs=source.solution_rs.rstrip(),
+            ),
+        },
+    ]
+    try:
+        response = openrouter_generate_code(messages)
+    except Exception as exc:
+        LOGGER.warning(
+            "enumerate_param_combinations failed source_id=%s error=%s",
+            source.source_id,
+            exc,
+        )
+        return []
+    if not response:
+        return []
+    combinations = _parse_param_combinations(response)
+    if not combinations and response.strip():
+        LOGGER.warning(
+            "enumerate_param_combinations zero_parsed source_id=%s response_preview=%r",
+            source.source_id,
+            preview_text(response, limit=300),
+        )
+    return combinations
+
+
+def _judge_alignment(problem_md: str, solution_code: str, run_id: str) -> Tuple[bool, str]:
+    messages = [
+        {"role": "system", "content": ALIGNMENT_JUDGE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": ALIGNMENT_JUDGE_USER_TEMPLATE.format(
+                problem_md=problem_md.strip(),
+                solution_code=solution_code.rstrip(),
+            ),
+        },
+    ]
+    response = openrouter_generate_code(messages)
+    if not response or not response.strip():
+        LOGGER.warning("alignment_judge unavailable run_id=%s", run_id)
+        return True, "judge_unavailable"
+
+    stripped = response.strip()
+    if "VERDICT: PASS" in stripped:
+        return True, ""
+
+    if "VERDICT: FAIL" in stripped:
+        reason_match = re.search(r"^REASON:\s*(.+)$", stripped, flags=re.MULTILINE)
+        reason = reason_match.group(1).strip() if reason_match else stripped
+        return False, reason
+
+    LOGGER.warning(
+        "alignment_judge unparseable run_id=%s response_preview=%r",
+        run_id,
+        preview_text(stripped, limit=200),
+    )
+    return True, "judge_unparseable"
+
+
+def _solve_evolved_problem(
+    *,
+    idea: str,
+    problem_md: str,
+    chosen_strategy: str,
+    source_ids: Sequence[str],
+    max_repair_attempts: int,
+    eval_base: str,
+    rustdocs_base: str,
+    client: httpx.Client,
+    recorder: StepRecorder,
+    run_id: str,
+) -> EvolvedProblemResult:
+    source_ids = list(source_ids)
+    recorder.record_step(
+        attempt=1,
+        step_type="ideate_generate",
+        code="",
+        eval_result=None,
+        extra_context={
+            "idea": idea,
+            "strategy": chosen_strategy,
+            "source_ids": source_ids,
+            "problem_preview": preview_text(problem_md, limit=500),
+        },
+    )
+
+    best_code = ""
+    best_eval: Dict[str, Any] = {}
+    best_score = 10**9
+    previous_code = ""
+    same_streak = 0
+    repair_context = ""
+
+    for attempt in range(1, max_repair_attempts + 1):
+        user_prompt = problem_md if attempt == 1 else REPAIR_PROMPT_TEMPLATE.format(context=repair_context)
+        solve_messages = [
+            {"role": "system", "content": SOLUTION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        response_text: Optional[str] = None
+        for retry in range(2):
+            response_text = openrouter_generate_code(solve_messages)
+            if response_text is not None:
+                break
+            if retry == 0:
+                retry_prompt = user_prompt + "\n\nPlease generate code. Output only a ```rust code block."
+                solve_messages = [
+                    {"role": "system", "content": SOLUTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": retry_prompt},
+                ]
+
+        if response_text is None:
+            LOGGER.warning(
+                "evolve_one_problem solution_generation_failed run_id=%s attempt=%s idea=%r strategy=%s",
+                run_id,
+                attempt,
+                idea,
+                chosen_strategy,
+            )
+            continue
+
+        code = extract_rust_code_block(response_text)
+        if code is None:
+            recorder.record_step(
+                attempt=attempt,
+                step_type="no_code",
+                code="",
+                eval_result=None,
+                extra_context={
+                    "idea": idea,
+                    "strategy": chosen_strategy,
+                    "source_ids": source_ids,
+                    "response_preview": preview_text(response_text, limit=500),
+                },
+            )
+            repair_context = (
+                "## Build/Test Results\n"
+                "No Rust code block was generated in the previous attempt.\n\n"
+                "## Repair Instructions\n"
+                "- Output the complete src/main.rs in a single ```rust code fence.\n"
+            )
+            continue
+
+        recorder.record_step(
+            attempt=attempt,
+            step_type="generate",
+            code=code,
+            eval_result=None,
+            extra_context={
+                "idea": idea,
+                "strategy": chosen_strategy,
+                "source_ids": source_ids,
+                "phase": "initial" if attempt == 1 else "repair",
+            },
+        )
+
+        symbols = extract_windows_api_symbols(code)
+        rustdoc_info = ""
+        try:
+            rustdoc_info = batch_rustdoc_lookup(symbols, rustdocs_base, client)
+        except Exception as exc:
+            LOGGER.warning("evolve_one_problem rustdoc_lookup_failed run_id=%s attempt=%s error=%s", run_id, attempt, exc)
+
+        eval_result: Dict[str, Any] = {}
+        eval_error: Optional[Exception] = None
+        for eval_try in range(2):
+            try:
+                eval_result = eval_server_evaluate(
+                    main_rs=code,
+                    unit_tests_private="",
+                    fixed_deps=FIXED_DEPENDENCIES,
+                    eval_base=eval_base,
+                    client=client,
+                    run_tests=False,
+                )
+                eval_error = None
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                eval_error = exc
+                LOGGER.warning(
+                    "evolve_one_problem eval_retry run_id=%s attempt=%s eval_try=%s error=%s",
+                    run_id,
+                    attempt,
+                    eval_try + 1,
+                    exc,
+                )
+            except Exception as exc:
+                eval_error = exc
+                LOGGER.warning(
+                    "evolve_one_problem eval_failed run_id=%s attempt=%s error=%s",
+                    run_id,
+                    attempt,
+                    exc,
+                )
+                break
+
+        if eval_error is not None and not eval_result:
+            recorder.record_step(
+                attempt=attempt,
+                step_type="eval_error",
+                code=code,
+                eval_result=None,
+                extra_context={
+                    "idea": idea,
+                    "strategy": chosen_strategy,
+                    "source_ids": source_ids,
+                    "error": str(eval_error),
+                },
+            )
+            repair_context = (
+                "## Build/Test Results\n"
+                f"Evaluator request failed: {eval_error}\n\n"
+                "## Repair Instructions\n"
+                "- Keep the same approach and output valid Rust in a single fence.\n"
+            )
+            continue
+
+        recorder.record_step(
+            attempt=attempt,
+            step_type="eval",
+            code=code,
+            eval_result=eval_result,
+            extra_context={
+                "idea": idea,
+                "strategy": chosen_strategy,
+                "source_ids": source_ids,
+                "symbols": symbols,
+                "rustdoc_info": rustdoc_info,
+            },
+        )
+
+        score = _error_score(eval_result)
+        if score < best_score:
+            best_score = score
+            best_code = code
+            best_eval = eval_result
+
+        if eval_result.get("ok") is True:
+            formatted = None
+            final_code = code.rstrip() + "\n"
+            final_eval = eval_result
+            try:
+                formatted = eval_server_format(code, eval_base, client)
+            except Exception as exc:
+                LOGGER.warning("evolve_one_problem format_failed run_id=%s attempt=%s error=%s", run_id, attempt, exc)
+                formatted = None
+
+            if formatted and formatted.strip() != code.strip():
+                recorder.record_step(
+                    attempt=attempt,
+                    step_type="format",
+                    code=formatted,
+                    eval_result=None,
+                    extra_context={"idea": idea, "strategy": chosen_strategy, "source_ids": source_ids},
+                )
+                try:
+                    formatted_eval = eval_server_evaluate(
+                        main_rs=formatted,
+                        unit_tests_private="",
+                        fixed_deps=FIXED_DEPENDENCIES,
+                        eval_base=eval_base,
+                        client=client,
+                        run_tests=False,
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "evolve_one_problem formatted_recheck_failed run_id=%s attempt=%s error=%s",
+                        run_id,
+                        attempt,
+                        exc,
+                    )
+                    formatted_eval = None
+
+                if isinstance(formatted_eval, dict) and formatted_eval.get("ok") is True:
+                    final_code = formatted.rstrip() + "\n"
+                    final_eval = formatted_eval
+
+            judge_passed, judge_reason = _judge_alignment(problem_md, final_code, run_id)
+            recorder.record_step(
+                attempt=attempt,
+                step_type="alignment_judge",
+                code=final_code,
+                eval_result=None,
+                extra_context={
+                    "idea": idea,
+                    "strategy": chosen_strategy,
+                    "source_ids": source_ids,
+                    "judge_passed": judge_passed,
+                    "judge_reason": judge_reason,
+                },
+            )
+            if not judge_passed:
+                LOGGER.warning(
+                    "evolve_one_problem alignment_judge_failed run_id=%s attempt=%s idea=%r reason=%r",
+                    run_id,
+                    attempt,
+                    idea,
+                    judge_reason,
+                )
+                repair_context = (
+                    "## Build/Test Results\n"
+                    "The solution compiled successfully but was rejected by the alignment judge.\n\n"
+                    f"## Judge Feedback\n{judge_reason}\n\n"
+                    "## Repair Instructions\n"
+                    "- Re-read the problem requirements carefully.\n"
+                    "- Adjust the implementation so it satisfies every requirement in the problem spec, "
+                    "constraints, signature, and example.\n"
+                    "- Output the complete fixed src/main.rs in a single ```rust code fence.\n"
+                )
+                continue
+
+            aligned_problem_md = _realign_problem(problem_md, final_code, run_id)
+            recorder.record_step(
+                attempt=attempt,
+                step_type="realign",
+                code=final_code,
+                eval_result=None,
+                extra_context={
+                    "idea": idea,
+                    "strategy": chosen_strategy,
+                    "source_ids": source_ids,
+                    "original_problem_preview": preview_text(problem_md, 300),
+                    "aligned_problem_preview": preview_text(aligned_problem_md, 300),
+                },
+            )
+            return EvolvedProblemResult(
+                idea=idea,
+                problem_md=aligned_problem_md,
+                main_rs=final_code,
+                last_eval=final_eval,
+                strategy=chosen_strategy,
+                source_ids=source_ids,
+            )
+
+        diagnostic_symbols = extract_symbols_from_diagnostics(eval_result)
+        targeted_info = ""
+        if diagnostic_symbols:
+            try:
+                targeted_info = batch_rustdoc_lookup(diagnostic_symbols, rustdocs_base, client)
+            except Exception as exc:
+                LOGGER.warning(
+                    "evolve_one_problem targeted_lookup_failed run_id=%s attempt=%s error=%s",
+                    run_id,
+                    attempt,
+                    exc,
+                )
+
+        combined_info_parts = [part for part in [rustdoc_info, targeted_info] if part.strip()]
+        combined_info = "\n\n".join(combined_info_parts)
+        repair_context = build_repair_context(
+            eval_result=eval_result,
+            main_rs=code,
+            rustdoc_info=combined_info,
+            problem_text=problem_md,
+        )
+
+        if code.strip() == previous_code.strip():
+            same_streak += 1
+        else:
+            same_streak = 0
+        previous_code = code
+
+        if same_streak >= 2:
+            hint = _first_diagnostic_hint(eval_result)
+            repair_context += (
+                "\n\nWARNING: Your previous repair attempt returned identical code. "
+                "You MUST make a different change this time. Focus on: "
+                f"{hint}"
+            )
+
+    if best_code.strip():
+        LOGGER.warning(
+            "evolve_one_problem exhausted_attempts returning_best run_id=%s strategy=%s idea=%r best_score=%s",
+            run_id,
+            chosen_strategy,
+            idea,
+            best_score,
+        )
+        recorder.record_step(
+            attempt=max_repair_attempts + 1,
+            step_type="best_effort",
+            code=best_code,
+            eval_result=best_eval,
+            extra_context={
+                "idea": idea,
+                "strategy": chosen_strategy,
+                "source_ids": source_ids,
+                "best_score": best_score,
+            },
+        )
+        return EvolvedProblemResult(
+            idea=idea,
+            problem_md=problem_md,
+            main_rs=best_code.rstrip() + "\n",
+            last_eval=best_eval,
+            verified=False,
+            strategy=chosen_strategy,
+            source_ids=source_ids,
+        )
+
+    raise RuntimeError(
+        f"Failed to solve evolved idea {idea!r} within {max_repair_attempts} attempts and no code was produced."
+    )
+
+
+def evolve_param_specialization_one(
+    source: SourceProblem,
+    param_label: str,
+    param_rationale: str,
+    previously_generated: Sequence[EvolvedProblemResult],
+    max_repair_attempts: int,
+    eval_base: str,
+    rustdocs_base: str,
+    client: httpx.Client,
+    recorder: StepRecorder,
+    run_id: str,
+) -> Optional[EvolvedProblemResult]:
+    previous_list = _format_previous_ideas(previously_generated)
+    ideation_prompt = PARAM_SPECIALIZATION_EVOLUTION_USER_TEMPLATE.format(
+        strategy_key=STRATEGY_PARAM_SPECIALIZATION,
+        strategy_description=STRATEGY_DESCRIPTIONS[STRATEGY_PARAM_SPECIALIZATION],
+        strategy_instruction=_STRATEGY_INSTRUCTIONS[STRATEGY_PARAM_SPECIALIZATION],
+        source_problem=source.problem_md.strip(),
+        source_solution=source.solution_rs.rstrip(),
+        param_label=param_label,
+        param_rationale=param_rationale,
+        previously_generated=previous_list,
+    )
+    messages = [
+        {"role": "system", "content": EVOLUTION_SYSTEM_PROMPT},
+        {"role": "user", "content": ideation_prompt},
+    ]
+
+    ideation_response: Optional[str] = None
+    for retry in range(2):
+        ideation_response = openrouter_generate_code(messages)
+        if ideation_response is not None:
+            break
+        if retry == 0:
+            retry_prompt = (
+                ideation_prompt
+                + "\n\nPlease output `TITLE:`, then `PROBLEM:`, then the Markdown block exactly in the required structure."
+            )
+            messages = [
+                {"role": "system", "content": EVOLUTION_SYSTEM_PROMPT},
+                {"role": "user", "content": retry_prompt},
+            ]
+
+    if ideation_response is None:
+        LOGGER.warning(
+            "evolve_param_specialization_one ideation_failed run_id=%s source_id=%s label=%r",
+            run_id,
+            source.source_id,
+            param_label,
+        )
+        return None
+
+    stripped_response = ideation_response.strip()
+    if "NO_MORE_IDEAS" in stripped_response:
+        recorder.record_step(
+            attempt=1,
+            step_type="ideate_opt_out",
+            code="",
+            eval_result=None,
+            extra_context={
+                "strategy": STRATEGY_PARAM_SPECIALIZATION,
+                "source_ids": [source.source_id],
+                "param_label": param_label,
+                "response": preview_text(stripped_response, limit=300),
+            },
+        )
+        return None
+
+    idea = _extract_title(ideation_response)
+    problem_md = _extract_problem_md(ideation_response)
+    if not problem_md:
+        recorder.record_step(
+            attempt=1,
+            step_type="ideate_generate",
+            code="",
+            eval_result=None,
+            extra_context={
+                "idea": idea,
+                "strategy": STRATEGY_PARAM_SPECIALIZATION,
+                "source_ids": [source.source_id],
+                "param_label": param_label,
+                "response_preview": preview_text(ideation_response, limit=500),
+            },
+        )
+        LOGGER.warning(
+            "evolve_param_specialization_one empty_problem_md run_id=%s source_id=%s label=%r idea=%r",
+            run_id,
+            source.source_id,
+            param_label,
+            idea,
+        )
+        return None
+
+    return _solve_evolved_problem(
+        idea=idea,
+        problem_md=problem_md,
+        chosen_strategy=STRATEGY_PARAM_SPECIALIZATION,
+        source_ids=[source.source_id],
+        max_repair_attempts=max_repair_attempts,
+        eval_base=eval_base,
+        rustdocs_base=rustdocs_base,
+        client=client,
+        recorder=recorder,
+        run_id=run_id,
+    )
+
+
+def _evolve_param_specialization_one_with_fresh_client(
+    source: SourceProblem,
+    param_label: str,
+    param_rationale: str,
+    previously_generated: Sequence[EvolvedProblemResult],
+    max_repair_attempts: int,
+    eval_base: str,
+    rustdocs_base: str,
+    output_dir: Optional[Path],
+) -> Optional[EvolvedProblemResult]:
+    run_id = uuid.uuid4().hex[:8]
+    recorder = StepRecorder(run_id=run_id, output_dir=output_dir)
+    with httpx.Client(timeout=120.0) as client:
+        eval_server_warmup(eval_base, client)
+        return evolve_param_specialization_one(
+            source=source,
+            param_label=param_label,
+            param_rationale=param_rationale,
+            previously_generated=previously_generated,
+            max_repair_attempts=max_repair_attempts,
+            eval_base=eval_base,
+            rustdocs_base=rustdocs_base,
+            client=client,
+            recorder=recorder,
+            run_id=run_id,
+        )
+
+
+def evolve_param_specialization_batch(
+    source_problems: Sequence[SourceProblem],
+    source_id: Optional[str],
+    output_dir: Optional[Path],
+    max_problems: int,
+    max_repair_attempts: int,
+    overwrite: bool,
+    workers: int,
+    eval_base: str,
+    rustdocs_base: str,
+) -> List[EvolvedProblemResult]:
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "problems").mkdir(parents=True, exist_ok=True)
+        (output_dir / "solutions").mkdir(parents=True, exist_ok=True)
+        has_existing = any((output_dir / "problems").glob("*.md")) or any((output_dir / "solutions").glob("*.rs"))
+        if has_existing and not overwrite:
+            LOGGER.info("Skipping generation (output exists, use --overwrite to regenerate).")
+            return []
+
+    if source_id:
+        selected_sources = [item for item in source_problems if item.source_id == source_id]
+        if not selected_sources:
+            raise ValueError(f"source_id not found: {source_id}")
+    else:
+        selected_sources = list(source_problems)
+
+    work_items: List[Tuple[SourceProblem, str, str]] = []
+    for source in selected_sources:
+        combinations = _enumerate_param_combinations(source)
+        for label, rationale in combinations[: max(0, max_problems)]:
+            work_items.append((source, label, rationale))
+
+    if not work_items:
+        return []
+
+    results: List[EvolvedProblemResult] = []
+    workers_count = max(1, int(workers))
+
+    if workers_count == 1:
+        run_id = uuid.uuid4().hex[:8]
+        recorder = StepRecorder(run_id=run_id, output_dir=output_dir)
+        with httpx.Client(timeout=120.0) as client:
+            eval_server_warmup(eval_base, client)
+            for source, label, rationale in work_items:
+                try:
+                    generated = evolve_param_specialization_one(
+                        source=source,
+                        param_label=label,
+                        param_rationale=rationale,
+                        previously_generated=list(results),
+                        max_repair_attempts=max_repair_attempts,
+                        eval_base=eval_base,
+                        rustdocs_base=rustdocs_base,
+                        client=client,
+                        recorder=recorder,
+                        run_id=run_id,
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "evolve_param_specialization_batch evolve_one_failed run_id=%s source_id=%s label=%r error=%s",
+                        run_id,
+                        source.source_id,
+                        label,
+                        exc,
+                    )
+                    continue
+                if generated is None:
+                    continue
+                if not generated.verified:
+                    LOGGER.warning(
+                        "evolve_param_specialization_batch best_effort_skipped run_id=%s idea=%r eval=%s",
+                        run_id,
+                        generated.idea,
+                        preview_text(generated.last_eval, limit=300),
+                    )
+                    continue
+                results.append(generated)
+                if output_dir is not None:
+                    _write_result(output_dir, generated)
+        return results
+
+    in_flight: Dict[concurrent.futures.Future[Optional[EvolvedProblemResult]], Tuple[SourceProblem, str, str]] = {}
+    next_index = 0
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers_count) as executor:
+        while next_index < len(work_items) or in_flight:
+            while len(in_flight) < workers_count and next_index < len(work_items):
+                source, label, rationale = work_items[next_index]
+                future = executor.submit(
+                    _evolve_param_specialization_one_with_fresh_client,
+                    source,
+                    label,
+                    rationale,
+                    list(results),
+                    max_repair_attempts,
+                    eval_base,
+                    rustdocs_base,
+                    output_dir,
+                )
+                in_flight[future] = (source, label, rationale)
+                next_index += 1
+
+            if not in_flight:
+                break
+
+            done, _ = concurrent.futures.wait(
+                in_flight.keys(),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                source, label, _ = in_flight.pop(future)
+                try:
+                    generated = future.result()
+                except Exception as exc:
+                    LOGGER.warning(
+                        "evolve_param_specialization_batch worker_failed source_id=%s label=%r error=%s",
+                        source.source_id,
+                        label,
+                        exc,
+                    )
+                    continue
+                if generated is None:
+                    continue
+                if not generated.verified:
+                    LOGGER.warning(
+                        "evolve_param_specialization_batch best_effort_skipped idea=%r eval=%s",
+                        generated.idea,
+                        preview_text(generated.last_eval, limit=300),
+                    )
+                    continue
+                results.append(generated)
+                if output_dir is not None:
+                    _write_result(output_dir, generated)
+
+    return results
 
 
 def evolve_one_problem(
@@ -768,6 +1588,22 @@ def process_evolution_batch(
     overwrite: bool,
     workers: int,
 ) -> List[EvolvedProblemResult]:
+    eval_base = env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
+    rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
+
+    if strategy == STRATEGY_PARAM_SPECIALIZATION:
+        return evolve_param_specialization_batch(
+            source_problems=source_problems,
+            source_id=source_id,
+            output_dir=output_dir,
+            max_problems=max_problems,
+            max_repair_attempts=max_repair_attempts,
+            overwrite=overwrite,
+            workers=workers,
+            eval_base=eval_base,
+            rustdocs_base=rustdocs_base,
+        )
+
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "problems").mkdir(parents=True, exist_ok=True)
@@ -777,8 +1613,6 @@ def process_evolution_batch(
             LOGGER.info("Skipping generation (output exists, use --overwrite to regenerate).")
             return []
 
-    eval_base = env("RUST_EVAL_BASE_URL", "http://127.0.0.1:3002")
-    rustdocs_base = env("RUSTDOCS_BASE_URL", "http://127.0.0.1:3001")
     results: List[EvolvedProblemResult] = []
 
     if max(1, int(workers)) == 1:
@@ -910,9 +1744,10 @@ if __name__ == "__main__":
             STRATEGY_ALGORITHMIC_SHIFT,
             STRATEGY_ADVERSARIAL,
             STRATEGY_MERGE,
+            STRATEGY_PARAM_SPECIALIZATION,
             STRATEGY_RANDOM,
         ],
-        help="Evolution strategy key. Use random to choose one per iteration.",
+        help="Evolution strategy key. Includes param_specialization for API-usage parameter fan-out; use random to choose one per iteration.",
     )
     parser.add_argument(
         "--max-problems",
