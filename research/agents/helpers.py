@@ -17,7 +17,7 @@ from langchain_core.tools import tool
 
 
 LOGGER = logging.getLogger(__name__)
-RUST_FENCE_RE = re.compile(r"```(?:rust)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+RUST_FENCE_RE = re.compile(r"(`{3,})(?:rust|rs)?[ \t]*\n(.*?)\1", re.IGNORECASE | re.DOTALL)
 
 IGNORABLE_UNUSED_CODES = frozenset({
     "unused_imports",
@@ -751,7 +751,7 @@ def code_help_tool(prompt: str, run_id: str) -> str:
         return ""
 
     base_url = env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = env("OPENROUTER_REVIEW_MODEL", "qwen/qwen3.6-plus-preview:free")
+    model = env("OPENROUTER_REVIEW_MODEL", "qwen/qwen3.5-flash-02-23")
     read_timeout_s = int(os.getenv("OPENROUTER_READ_TIMEOUT", "600"))
     timeout = httpx.Timeout(connect=10.0, read=float(read_timeout_s), write=30.0, pool=10.0)
 
@@ -892,7 +892,7 @@ def openrouter_generate_code(messages: List[Dict[str, str]]) -> Optional[str]:
     model = (
         os.getenv("OPENROUTER_CODE_MODEL")
         or os.getenv("OPENROUTER_REVIEW_MODEL")
-        or "qwen/qwen3.6-plus-preview:free"
+        or "qwen/qwen3.5-flash-02-23"
     )
     max_tokens = int(os.getenv("OPENROUTER_MAX_TOKENS", "4096"))
     temperature = float(os.getenv("OPENROUTER_TEMPERATURE", "0.2"))
@@ -982,7 +982,7 @@ def extract_rust_code_block(text: str) -> Optional[str]:
         return None
     matches = list(RUST_FENCE_RE.finditer(text))
     if matches:
-        code = matches[-1].group(1).strip()
+        code = matches[-1].group(2).strip()
         if code:
             return code
     stripped = text.strip()
