@@ -109,6 +109,10 @@ struct Cli {
     /// Prompt strategy mode for template handling.
     #[arg(long, value_enum, default_value = "system-user")]
     prompt_mode: PromptMode,
+
+    /// Send non_windows_deps=true to the eval API (uses slim dependency cache)
+    #[arg(long, default_value_t = false)]
+    non_windows_deps: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -177,6 +181,7 @@ struct AttemptReport {
 struct EvaluateRequest {
     main_rs: String,
     dependencies: String,
+    non_windows_deps: Option<bool>,
 }
 
 /// Your evaluation API response (matches what you described earlier)
@@ -975,6 +980,11 @@ async fn eval_code(client: &reqwest::Client, cli: &Cli, gen: &str) -> Result<Eva
     let body = EvaluateRequest {
         main_rs: gen.to_string(),
         dependencies: CARGO_DEPENDENCIES.to_string(),
+        non_windows_deps: if cli.non_windows_deps {
+            Some(true)
+        } else {
+            None
+        },
     };
 
     let resp = req

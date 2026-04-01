@@ -27,14 +27,20 @@ use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore, time::timeout};
 use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing::{info, warn};
 
+const NON_WINDOWS_DEPS: &str =
+    "regex = \"1\"\nrand = \"0.10\"\nmd5 = \"0.8\"\ntempfile = \"3\"\nsha2 = \"0.10\"";
+
 #[derive(Clone)]
 struct AppState {
     semaphore: Arc<Semaphore>,
     api_key: Option<String>,
     limits: RunnerLimits,
     template_dir: Arc<PathBuf>,
+    non_windows_template_dir: Arc<PathBuf>,
     fixed_dependencies: Arc<String>,
+    non_windows_dependencies: Arc<String>,
     template_build_lock: Arc<tokio::sync::Mutex<()>>,
+    non_windows_build_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -85,6 +91,9 @@ struct EvaluateRequest {
     main_rs: String,
     /// Lines that would live INSIDE the [dependencies] section (no header).
     dependencies: String,
+    /// When Some(true), use the non-Windows slim dependency cache instead of the full Windows one.
+    #[serde(default)]
+    non_windows_deps: Option<bool>,
     /// When Some(false), skip the test step; None or Some(true) = run tests.
     #[serde(default)]
     run_tests: Option<bool>,
@@ -204,15 +213,21 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let api_key = std::env::var("API_KEY").ok();
     let fixed_dependencies = include_str!("../../rust_dependencies.md").to_string();
+    let non_windows_dependencies = NON_WINDOWS_DEPS.to_string();
 
-    let template_dir = build_template_project(&fixed_dependencies).await?;
+    let template_dir = build_template_project(&fixed_dependencies, "use windows::*;\nfn main() {}").await?;
+    let non_windows_template_dir =
+        build_template_project(NON_WINDOWS_DEPS, "fn main() {}").await?;
 
     let state = AppState {
         semaphore: Arc::new(Semaphore::new(concurrency)),
         api_key,
         template_dir: Arc::new(template_dir),
+        non_windows_template_dir: Arc::new(non_windows_template_dir),
         fixed_dependencies: Arc::new(fixed_dependencies),
+        non_windows_dependencies: Arc::new(non_windows_dependencies),
         template_build_lock: Arc::new(tokio::sync::Mutex::new(())),
+        non_windows_build_lock: Arc::new(tokio::sync::Mutex::new(())),
         limits: RunnerLimits {
             max_output_bytes: 256 * 1024,
             max_diagnostics: 200,
@@ -244,9 +259,15 @@ async fn evaluate(
 ) -> Result<Json<EvaluateResponse>, AppError> {
     // Keep your VM alive by not letting everyone compile at once.
     let _permit = state.semaphore.acquire().await.unwrap();
+    let use_non_windows = req.non_windows_deps == Some(true);
+    let deps = if use_non_windows {
+        state.non_windows_dependencies.as_str()
+    } else {
+        req.dependencies.as_str()
+    };
 
     // Minimal guardrail: dependencies should be *entries*, not a whole surprise TOML novel.
-    if req.dependencies.contains("\n[") || req.dependencies.trim_start().starts_with('[') {
+    if deps.contains("\n[") || deps.trim_start().starts_with('[') {
         return Err(AppError::BadRequest(
             "dependencies must be lines inside [dependencies], not TOML tables".to_string(),
         ));
@@ -254,9 +275,24 @@ async fn evaluate(
 
     let project_id = format!("{:08x}", randish_u32());
 
-    ensure_template_ready(&state).await?;
-    let temp = copy_template(&state.template_dir)?;
-    write_main_rs(temp.path(), &req.main_rs)?;
+    let (template_dir, template_build_lock, template_dependencies, dummy_main) = if use_non_windows {
+        (
+            state.non_windows_template_dir.as_ref(),
+            state.non_windows_build_lock.as_ref(),
+            state.non_windows_dependencies.as_str(),
+            "fn main() {}",
+        )
+    } else {
+        (
+            state.template_dir.as_ref(),
+            state.template_build_lock.as_ref(),
+            state.fixed_dependencies.as_str(),
+            "use windows::*;\nfn main() {}",
+        )
+    };
+    ensure_template_ready(template_dir, template_build_lock, template_dependencies, dummy_main).await?;
+    let temp = copy_template(template_dir)?;
+    write_project(temp.path(), &req.main_rs, deps)?;
 
     let build_args: &[&str] = if req.compile_tests == Some(true) {
         &["test", "--no-run", "--message-format=json"]
@@ -320,7 +356,21 @@ async fn evaluate(
 async fn warmup(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<WarmupResponse>, AppError> {
-    let cached = ensure_template_ready_with_cache_flag(&state).await?;
+    let cached_windows = ensure_template_ready_with_cache_flag(
+        &state.template_dir,
+        &state.template_build_lock,
+        &state.fixed_dependencies,
+        "use windows::*;\nfn main() {}",
+    )
+    .await?;
+    let cached_non_windows = ensure_template_ready_with_cache_flag(
+        &state.non_windows_template_dir,
+        &state.non_windows_build_lock,
+        &state.non_windows_dependencies,
+        "fn main() {}",
+    )
+    .await?;
+    let cached = cached_windows && cached_non_windows;
     Ok(Json(WarmupResponse { ok: true, cached }))
 }
 
@@ -432,35 +482,27 @@ edition = "2021"
     Ok(())
 }
 
-fn write_main_rs(root: &Path, main_rs: &str) -> Result<(), AppError> {
-    let src = root.join("src");
-    fs::create_dir_all(&src)?;
-    let code = if !main_rs.contains("fn main()") {
-        format!("fn main() {{}}\n\n{}", main_rs)
-    } else {
-        main_rs.to_string()
-    };
-    fs::write(src.join("main.rs"), code)?;
-    Ok(())
-}
-
-async fn build_template_project(deps: &str) -> Result<PathBuf, anyhow::Error> {
+async fn build_template_project(deps: &str, dummy_main: &str) -> Result<PathBuf, anyhow::Error> {
     let mut hasher = DefaultHasher::new();
     deps.hash(&mut hasher);
     let hash = hasher.finish();
     let template_dir = std::env::temp_dir().join(format!("rust_eval_cache_{hash:016x}"));
-    build_template_project_at(&template_dir, deps).await?;
+    build_template_project_at(&template_dir, deps, dummy_main).await?;
     Ok(template_dir)
 }
 
-async fn build_template_project_at(dir: &Path, deps: &str) -> Result<(), anyhow::Error> {
+async fn build_template_project_at(
+    dir: &Path,
+    deps: &str,
+    dummy_main: &str,
+) -> Result<(), anyhow::Error> {
     fs::create_dir_all(dir)?;
     if is_template_cached(dir) {
         return Ok(());
     }
 
     println!("Building template cache");
-    write_project(dir, "use windows::*;\n fn main() {}", deps)?;
+    write_project(dir, dummy_main, deps)?;
     let out = run_command_limited(
         "cargo",
         &["build", "--message-format=json"],
@@ -493,21 +535,31 @@ fn is_template_cached(template_dir: &Path) -> bool {
     }
 }
 
-async fn ensure_template_ready(state: &AppState) -> Result<(), AppError> {
-    let _ = ensure_template_ready_with_cache_flag(state).await?;
+async fn ensure_template_ready(
+    template_dir: &Path,
+    build_lock: &tokio::sync::Mutex<()>,
+    dependencies: &str,
+    dummy_main: &str,
+) -> Result<(), AppError> {
+    let _ = ensure_template_ready_with_cache_flag(template_dir, build_lock, dependencies, dummy_main).await?;
     Ok(())
 }
 
-async fn ensure_template_ready_with_cache_flag(state: &AppState) -> Result<bool, AppError> {
-    if is_template_cached(&state.template_dir) {
+async fn ensure_template_ready_with_cache_flag(
+    template_dir: &Path,
+    build_lock: &tokio::sync::Mutex<()>,
+    dependencies: &str,
+    dummy_main: &str,
+) -> Result<bool, AppError> {
+    if is_template_cached(template_dir) {
         return Ok(true);
     }
 
-    let _guard = state.template_build_lock.lock().await;
-    if is_template_cached(&state.template_dir) {
+    let _guard = build_lock.lock().await;
+    if is_template_cached(template_dir) {
         return Ok(true);
     }
-    build_template_project_at(&state.template_dir, &state.fixed_dependencies)
+    build_template_project_at(template_dir, dependencies, dummy_main)
         .await
         .map_err(|e| AppError::Process(format!("template warmup failed: {e}")))?;
     Ok(false)
