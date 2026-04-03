@@ -145,7 +145,7 @@ def load_report(path: Path) -> dict[str, Any]:
 
 
 def aggregate_reports(
-    reports_dir: Path, benchmark_filter: set[str] | None
+        reports_dir: Path, benchmark_filter: set[str] | None
 ) -> dict[tuple[str, str], dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -277,10 +277,10 @@ def aggregate_reports(
                 group["build_fail_all_count"] += 1
 
             problem_id = (
-                problem.get("problem_id")
-                or problem.get("id")
-                or problem.get("name")
-                or f"problem-{group['problems']}"
+                    problem.get("problem_id")
+                    or problem.get("id")
+                    or problem.get("name")
+                    or f"problem-{group['problems']}"
             )
             group["per_problem"].append(
                 {
@@ -493,7 +493,7 @@ def _safe_filename_component(name: str) -> str:
 
 
 def _chart_model_overview(
-    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+        by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
 ) -> None:
     metric_specs = [
         ("pass@1", "pass_at_1"),
@@ -521,24 +521,25 @@ def _chart_model_overview(
                     f"{value:.1f}%",
                     ha="center",
                     va="bottom",
-                    fontsize=8,
+                    fontsize=11,
                 )
 
         ax.set_xticks(x)
-        ax.set_xticklabels(models, rotation=30, ha="right")
-        ax.set_ylim(0.0, 105.0)
-        ax.set_ylabel("Percent")
-        ax.set_title(f"Model Performance Overview: {benchmark}")
+        ax.set_xticklabels(models, rotation=30, ha="right", fontsize=11)
+        ax.set_ylabel("Percent", fontsize=13)
+        ax.set_title(f"Model Performance Overview: {benchmark}", fontsize=15)
+        ax.tick_params(axis="y", labelsize=11)
+        ax.legend(loc="upper right", fontsize=11)
         ax.legend(loc="upper right")
         ax.grid(axis="y", alpha=0.3, linestyle="--")
         fig.tight_layout()
         out_path = charts_dir / f"{_safe_filename_component(benchmark)}_overview.png"
-        fig.savefig(out_path, bbox_inches="tight")
+        fig.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
 
 def _chart_quality_metrics(
-    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+        by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
 ) -> None:
     for benchmark, rows in sorted(by_benchmark.items()):
         if not rows:
@@ -569,12 +570,12 @@ def _chart_quality_metrics(
         ax1.set_title(f"Build & Clippy Quality: {benchmark}")
         fig.tight_layout()
         out_path = charts_dir / f"{_safe_filename_component(benchmark)}_quality.png"
-        fig.savefig(out_path, bbox_inches="tight")
+        fig.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
 
 def _chart_error_codes(
-    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+        by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
 ) -> None:
     for benchmark, rows in sorted(by_benchmark.items()):
         if not rows:
@@ -612,15 +613,15 @@ def _chart_error_codes(
         fig.suptitle(f"Top Build Error Codes: {benchmark}", y=1.01)
         fig.tight_layout()
         out_path = charts_dir / f"{_safe_filename_component(benchmark)}_error_codes.png"
-        fig.savefig(out_path, bbox_inches="tight")
+        fig.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
 
 def _chart_per_problem_heatmap(
-    by_benchmark: dict[str, list[dict[str, Any]]],
-    grouped: dict[tuple[str, str], dict[str, Any]],
-    charts_dir: Path,
-    plt: Any,
+        by_benchmark: dict[str, list[dict[str, Any]]],
+        grouped: dict[tuple[str, str], dict[str, Any]],
+        charts_dir: Path,
+        plt: Any,
 ) -> None:
     for benchmark, rows in sorted(by_benchmark.items()):
         if not rows:
@@ -667,12 +668,12 @@ def _chart_per_problem_heatmap(
         cbar.set_label("overall_ok_rate")
         fig.tight_layout()
         out_path = charts_dir / f"{_safe_filename_component(benchmark)}_heatmap.png"
-        fig.savefig(out_path, bbox_inches="tight")
+        fig.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
 
 def _chart_radar(
-    by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
+        by_benchmark: dict[str, list[dict[str, Any]]], charts_dir: Path, plt: Any
 ) -> None:
     try:
         import numpy as np
@@ -717,14 +718,14 @@ def _chart_radar(
         ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.12))
         fig.tight_layout()
         out_path = charts_dir / f"{_safe_filename_component(benchmark)}_radar.png"
-        fig.savefig(out_path, bbox_inches="tight")
+        fig.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
 
 def generate_charts(
-    by_benchmark: dict[str, list[dict[str, Any]]],
-    grouped: dict[tuple[str, str], dict[str, Any]],
-    charts_dir: Path,
+        by_benchmark: dict[str, list[dict[str, Any]]],
+        grouped: dict[tuple[str, str], dict[str, Any]],
+        charts_dir: Path,
 ) -> None:
     try:
         import matplotlib.pyplot as plt
