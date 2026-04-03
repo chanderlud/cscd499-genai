@@ -140,6 +140,18 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSONL dataset path to merge (repeatable).",
     )
     parser.add_argument(
+        "--conversational-datasets",
+        action="append",
+        default=[],
+        help="Pre-formatted conversational JSONL path to merge without base-ID filtering (repeatable).",
+    )
+    parser.add_argument(
+        "--max-conversational-fraction",
+        type=float,
+        default=1.0,
+        help="Maximum fraction of final dataset that may be 'conversational' type (default 1.0, i.e. uncapped).",
+    )
+    parser.add_argument(
         "--secondary-roots",
         action="append",
         default=[],
@@ -529,6 +541,56 @@ def load_extra_dataset(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def load_conversational_dataset(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    def first_user_content(prompt: Any) -> str:
+        if not isinstance(prompt, list):
+            return ""
+        for msg in prompt:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            content = _to_text(msg.get("content")).strip()
+            if role == "user" and content:
+                return content
+        return ""
+
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                print(f"Warning: invalid JSON at {path}:{line_number}; skipping.", file=sys.stderr)
+                continue
+            if not isinstance(payload, dict):
+                print(f"Warning: non-object row at {path}:{line_number}; skipping.", file=sys.stderr)
+                continue
+            row_id = payload.get("id")
+            has_id = isinstance(row_id, str) and row_id.strip()
+            prompt_field = payload.get("prompt")
+            has_prompt = isinstance(prompt_field, list) and len(prompt_field) > 0
+            if not has_id and not has_prompt:
+                print(f"Warning: row missing id and non-empty prompt at {path}:{line_number}; skipping.", file=sys.stderr)
+                continue
+            row = dict(payload)
+            row["type"] = "conversational"
+            if not has_id:
+                user_text = first_user_content(prompt_field)
+                if not user_text:
+                    print(
+                        f"Warning: row missing id and no user message in prompt at {path}:{line_number}; skipping.",
+                        file=sys.stderr,
+                    )
+                    continue
+                row["id"] = f"conv_{sha256_text(user_text)}"
+            rows.append(row)
+    return rows
+
+
 def filter_by_base_ids(extra_rows: Sequence[Dict[str, Any]], base_ids: set[str]) -> Tuple[List[Dict[str, Any]], int]:
     kept: List[Dict[str, Any]] = []
     dropped = 0
@@ -591,6 +653,19 @@ def convert_to_conversational(
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     merged_metadata: Dict[str, Any] = {"type": row_type or "extra", **metadata}
 
+    def first_system_content(prompt: Any) -> str:
+        if not isinstance(prompt, list):
+            return ""
+        for msg in prompt:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role == "system":
+                return _to_text(msg.get("content")).strip()
+        return ""
+
+    original_system = ""
+
     if row_type == "repair":
         user_content = (
             "Problem:\n"
@@ -638,6 +713,7 @@ def convert_to_conversational(
                 assistant_parts.append(content)
         user_content = "\n\n".join(user_parts).strip()
         assistant_content = "\n\n".join(assistant_parts).strip()
+        original_system = first_system_content(prompt_rows)
     else:
         problem = _to_text(row.get("problem")).strip()
         failed_code = _to_text(row.get("failed_code")).strip()
@@ -672,6 +748,9 @@ def convert_to_conversational(
         effective_prompt = critique_system_prompt
     else:
         effective_prompt = system_prompt
+
+    if row_type == "conversational" and original_system:
+        effective_prompt = original_system
 
     return {
         "id": row_id,
@@ -899,7 +978,37 @@ def main() -> None:
             }
         )
 
+    conversational_dataset_summary: List[Dict[str, Any]] = []
+    for dataset_path_str in args.conversational_datasets:
+        dataset_path = Path(dataset_path_str)
+        if not dataset_path.exists():
+            print(f"Warning: conversational dataset not found: {dataset_path}", file=sys.stderr)
+            conversational_dataset_summary.append(
+                {
+                    "path": str(dataset_path),
+                    "loaded": 0,
+                    "converted": 0,
+                    "error": "not_found",
+                }
+            )
+            continue
+
+        loaded_rows = load_conversational_dataset(dataset_path)
+        converted_rows = [
+            convert_to_conversational(row, args.system_prompt, repair_system_prompt, critique_system_prompt)
+            for row in loaded_rows
+        ]
+        dataset_rows.extend(converted_rows)
+        conversational_dataset_summary.append(
+            {
+                "path": str(dataset_path),
+                "loaded": len(loaded_rows),
+                "converted": len(converted_rows),
+            }
+        )
+
     rng = random.Random(42)
+    dataset_rows = cap_type_fraction(dataset_rows, "conversational", args.max_conversational_fraction, rng)
     dataset_rows = cap_type_fraction(dataset_rows, "repair", args.max_repair_fraction, rng)
     dataset_rows = cap_type_fraction(dataset_rows, "critique", args.max_critique_fraction, rng)
 
@@ -1005,6 +1114,11 @@ def main() -> None:
         for row in dataset_rows
         if isinstance(row.get("metadata"), dict) and row["metadata"].get("type") == "critique"
     )
+    conversational_rows_in_output = sum(
+        1
+        for row in dataset_rows
+        if isinstance(row.get("metadata"), dict) and row["metadata"].get("type") == "conversational"
+    )
 
     summary = {
         "input": {
@@ -1028,9 +1142,11 @@ def main() -> None:
             "duplicate_problem_groups": len(duplicate_groups),
             "filtered_duplicate_samples": 0 if args.keep_duplicates else sum(len(group.dropped_ids) for group in duplicate_groups),
             "extra_rows_added": sum(item.get("converted", 0) for item in extra_dataset_summary),
+            "conversational_rows_added": sum(item.get("converted", 0) for item in conversational_dataset_summary),
             "total_dataset_rows": len(dataset_rows),
             "repair_rows_in_output": repair_rows_in_output,
             "critique_rows_in_output": critique_rows_in_output,
+            "conversational_rows_in_output": conversational_rows_in_output,
         },
         "missing_pairs": {
             "missing_solutions_ids": missing_solutions,
@@ -1055,6 +1171,7 @@ def main() -> None:
             "top_terminal_items": terminal_hist_rows[:100],
         },
         "extra_datasets": extra_dataset_summary,
+        "conversational_datasets": conversational_dataset_summary,
         "artifacts": {
             "dataset_jsonl": str(dataset_path),
             "summary_json": str(summary_path),
@@ -1073,6 +1190,7 @@ def main() -> None:
     print(f"Missing solutions: {len(missing_solutions)}")
     print(f"Duplicate groups: {len(duplicate_groups)}")
     print(f"Extra rows added: {sum(item.get('converted', 0) for item in extra_dataset_summary)}")
+    print(f"Conversational rows added: {sum(item.get('converted', 0) for item in conversational_dataset_summary)}")
     print(f"Final dataset rows: {len(dataset_rows)}")
     print(
         f"Repair rows: {repair_rows_in_output} / {len(dataset_rows)} "

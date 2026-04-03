@@ -2,3 +2,6 @@
 Cargo.lock
 target/
 data/
+/research/dataset/personal-rust/train-00000-of-00003.jsonl
+/research/dataset/personal-rust/train-00001-of-00003.jsonl
+/research/dataset/personal-rust/train-00002-of-00003.jsonl
