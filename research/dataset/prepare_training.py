@@ -122,6 +122,18 @@ def parse_args() -> argparse.Namespace:
         help="System prompt prepended to all rows.",
     )
     parser.add_argument(
+        "--repair-system-prompt",
+        type=str,
+        default=None,
+        help="System prompt for extra-dataset rows with type 'repair' (defaults to --system-prompt if omitted).",
+    )
+    parser.add_argument(
+        "--critique-system-prompt",
+        type=str,
+        default=None,
+        help="System prompt for extra-dataset rows with type 'critique' (defaults to --system-prompt if omitted).",
+    )
+    parser.add_argument(
         "--extra-datasets",
         action="append",
         default=[],
@@ -568,7 +580,12 @@ def _to_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def convert_to_conversational(row: Dict[str, Any], system_prompt: str) -> Dict[str, Any]:
+def convert_to_conversational(
+    row: Dict[str, Any],
+    system_prompt: str,
+    repair_system_prompt: str,
+    critique_system_prompt: str,
+) -> Dict[str, Any]:
     row_id = str(row.get("id") or "")
     row_type = str(row.get("type") or "").strip().lower()
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -649,10 +666,17 @@ def convert_to_conversational(row: Dict[str, Any], system_prompt: str) -> Dict[s
             or ""
         ).strip()
 
+    if row_type == "repair":
+        effective_prompt = repair_system_prompt
+    elif row_type == "critique":
+        effective_prompt = critique_system_prompt
+    else:
+        effective_prompt = system_prompt
+
     return {
         "id": row_id,
         "prompt": [
-            {"role": "system", "content": system_prompt.strip()},
+            {"role": "system", "content": effective_prompt.strip()},
             {"role": "user", "content": user_content.strip()},
         ],
         "completion": [{"role": "assistant", "content": assistant_content}],
@@ -722,6 +746,11 @@ def summarize_numeric(values: Sequence[int]) -> Dict[str, float]:
 
 def main() -> None:
     args = parse_args()
+
+    repair_system_prompt = args.repair_system_prompt if args.repair_system_prompt is not None else args.system_prompt
+    critique_system_prompt = (
+        args.critique_system_prompt if args.critique_system_prompt is not None else args.system_prompt
+    )
 
     root = Path(args.root)
     problems_dir = Path(args.problems_dir) if args.problems_dir else root / "problems"
@@ -855,7 +884,10 @@ def main() -> None:
 
         loaded_rows = load_extra_dataset(dataset_path)
         kept_rows, dropped_count = filter_by_base_ids(loaded_rows, base_ids)
-        converted_rows = [convert_to_conversational(row, args.system_prompt) for row in kept_rows]
+        converted_rows = [
+            convert_to_conversational(row, args.system_prompt, repair_system_prompt, critique_system_prompt)
+            for row in kept_rows
+        ]
         dataset_rows.extend(converted_rows)
         extra_dataset_summary.append(
             {
@@ -985,6 +1017,8 @@ def main() -> None:
             "encoding": args.encoding,
             "tokenizer": args.model_name,
             "output_format": "conversational",
+            "repair_system_prompt": repair_system_prompt,
+            "critique_system_prompt": critique_system_prompt,
         },
         "counts": {
             "paired_examples_before_dedup": len(records),
